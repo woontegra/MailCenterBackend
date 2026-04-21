@@ -8,9 +8,19 @@ router.use(authenticate);
 
 router.post('/accounts', async (req: AuthRequest, res: Response) => {
   try {
-    const { 
-      name, email, imap_host, imap_port, imap_user, imap_password,
-      smtp_host, smtp_port, smtp_user, smtp_password, smtp_secure
+    const {
+      name,
+      email,
+      company_name,
+      imap_host,
+      imap_port,
+      imap_user,
+      imap_password,
+      smtp_host,
+      smtp_port,
+      smtp_user,
+      smtp_password,
+      smtp_secure
     } = req.body;
 
     if (!email || !imap_host || !imap_user || !imap_password) {
@@ -20,14 +30,23 @@ router.post('/accounts', async (req: AuthRequest, res: Response) => {
     const tenantId = req.user!.tenantId;
 
     const result = await query(
-      `INSERT INTO mail_accounts (
-        name, email, imap_host, imap_port, imap_user, imap_password,
-        smtp_host, smtp_port, smtp_user, smtp_password, smtp_secure, tenant_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      RETURNING *`,
+      `INSERT INTO mail_accounts 
+       (name, email, company_name, imap_host, imap_port, imap_user, imap_password, smtp_host, smtp_port, smtp_user, smtp_password, smtp_secure, tenant_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [
-        name || email, email, imap_host, imap_port || 993, imap_user, imap_password,
-        smtp_host, smtp_port || 587, smtp_user, smtp_password, smtp_secure || false, tenantId
+        name || email, 
+        email, 
+        company_name, 
+        imap_host, 
+        imap_port || 993, 
+        imap_user, 
+        imap_password,
+        smtp_host, 
+        smtp_port || 587, 
+        smtp_user, 
+        smtp_password, 
+        smtp_secure || false, 
+        tenantId
       ]
     );
 

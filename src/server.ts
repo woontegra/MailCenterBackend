@@ -21,6 +21,7 @@ import draftRoutes from './routes/draftRoutes';
 import templateRoutes from './routes/templateRoutes';
 import inviteRoutes from './routes/inviteRoutes';
 import inboxGroupedRoutes from './routes/inboxGroupedRoutes';
+import threadRoutes from './routes/threadRoutes';
 import { apiRateLimit } from './middleware/rateLimit';
 
 dotenv.config();
@@ -49,6 +50,7 @@ app.use('/api/drafts', draftRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/inbox', inboxGroupedRoutes);
+app.use('/api', threadRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
