@@ -19,7 +19,7 @@ export class SmtpService {
     });
   }
 
-  public async sendMail(request: SendMailRequest, tenantId: number): Promise<SendMailResponse> {
+  async sendMail(request: SendMailRequest, tenantId: number): Promise<SendMailResponse> {
     try {
       const accountResult = await query(
         'SELECT * FROM mail_accounts WHERE id = $1 AND tenant_id = $2 AND is_active = true',
