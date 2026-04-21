@@ -13,7 +13,8 @@
     "start": "node dist/server.js",
     "migrate": "ts-node src/database/runMigrations.ts",
     "migrate:prod": "node dist/database/runMigrations.js",
-    "db:push": "ts-node src/database/runMigrations.ts"
+    "db:push": "ts-node src/database/runMigrations.ts",
+    "railway:migrate": "node dist/database/runMigrations.js && node dist/server.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
