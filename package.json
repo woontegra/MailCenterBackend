@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "nodemon src/server.ts",
-    "build": "npm install && tsc --skipLibCheck",
+    "build": "tsc --skipLibCheck",
     "start": "node dist/server.js",
     "db:migrate": "node src/database/migrate.js"
   },
