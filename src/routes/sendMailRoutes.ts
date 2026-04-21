@@ -1,13 +1,17 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { SmtpService } from '../services/smtpService';
 import { SendMailRequest } from '../types';
+import { authenticate, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 const smtpService = new SmtpService();
 
-router.post('/send-mail', async (req: Request, res: Response) => {
+router.use(authenticate);
+
+router.post('/send-mail', async (req: AuthRequest, res: Response) => {
   try {
     const { accountId, to, subject, text, html }: SendMailRequest = req.body;
+    const tenantId = req.user!.tenantId;
 
     if (!accountId || !to || !subject) {
       return res.status(400).json({
@@ -23,13 +27,15 @@ router.post('/send-mail', async (req: Request, res: Response) => {
       });
     }
 
-    const result = await smtpService.sendMail({
+    const mailRequest: SendMailRequest = {
       accountId,
       to,
       subject,
       text,
       html,
-    });
+    };
+    
+    const result = await smtpService.sendMail(mailRequest, tenantId);
 
     if (result.success) {
       return res.status(200).json(result);
