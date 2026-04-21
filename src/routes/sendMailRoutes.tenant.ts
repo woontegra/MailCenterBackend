@@ -27,16 +27,15 @@ router.post('/send-mail', async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const result = await smtpService.sendMail(
-      {
-        accountId,
-        to,
-        subject,
-        text,
-        html,
-      },
-      tenantId
-    );
+    const mailRequest: SendMailRequest = {
+      accountId,
+      to,
+      subject,
+      text,
+      html,
+    };
+    
+    const result = await smtpService.sendMail(mailRequest, tenantId);
 
     if (result.success) {
       return res.status(200).json(result);
