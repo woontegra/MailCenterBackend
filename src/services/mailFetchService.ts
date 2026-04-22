@@ -55,11 +55,10 @@ export class MailFetchService {
 
       await imapService.connect(account);
       const lastUid = account.last_sync_uid || 0;
-      const fetchRange = `${lastUid + 1}:*`;
       
       console.log(`Fetching from UID ${lastUid + 1} for ${account.email}`);
       
-      const messages: any[] = await imapService.fetchRecentMails(fetchRange);
+      const messages: any[] = await imapService.fetchRecentMails(50);
 
       let fetchedCount = 0;
       let maxUid = lastUid;

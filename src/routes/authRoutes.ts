@@ -48,8 +48,8 @@ router.post('/register', async (req: Request, res: Response) => {
     );
 
     const token = generateToken({
-      userId: newUser.id,
-      email: newUser.email,
+      userId: user.id,
+      email: user.email,
       tenantId: tenantId,
       role: 'admin',
     });
@@ -58,9 +58,9 @@ router.post('/register', async (req: Request, res: Response) => {
       success: true,
       token,
       user: {
-        id: newUser.id,
-        email: newUser.email,
-        tenant_id: newUser.tenant_id,
+        id: user.id,
+        email: user.email,
+        tenant_id: user.tenant_id,
       },
     } as AuthResponse);
   } catch (error: any) {

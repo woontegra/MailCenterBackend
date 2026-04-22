@@ -18,9 +18,11 @@ export const comparePassword = async (
 };
 
 export const generateToken = (payload: AuthPayload & { role?: string }): string => {
-  return jwt.sign(payload, process.env.JWT_SECRET || 'secret', {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  });
+  return jwt.sign(
+    payload, 
+    process.env.JWT_SECRET || 'secret', 
+    { expiresIn: (process.env.JWT_EXPIRES_IN || '7d') as any }
+  );
 };
 
 export const verifyToken = (token: string): AuthPayload | null => {
