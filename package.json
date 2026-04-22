@@ -9,8 +9,7 @@
   },
   "scripts": {
     "dev": "nodemon src/server.ts",
-    "build": "tsc --skipLibCheck && npm run copy-sql",
-    "copy-sql": "node -e \"require('fs').cpSync('src/database', 'dist/database', {recursive: true, filter: (src) => src.endsWith('.sql')})\"",
+    "build": "tsc --skipLibCheck && node copy-sql.js",
     "start": "node dist/server.js",
     "migrate": "ts-node src/database/runMigrations.ts",
     "migrate:prod": "node dist/database/runMigrations.js",
