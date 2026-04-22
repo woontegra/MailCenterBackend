@@ -29,6 +29,15 @@ export interface MailAccount {
   smtp_secure?: boolean;
   tenant_id?: number;
   is_active: boolean;
+  provider?: string;
+  auth_type?: string;
+  access_token?: string;
+  refresh_token?: string;
+  token_expires_at?: Date;
+  last_sync_uid?: number;
+  last_sync_at?: Date;
+  sync_status?: string;
+  sync_error?: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -68,6 +77,8 @@ export interface FetchedMessage {
   date: Date;
   bodyPreview: string;
   headers: any;
+  uid?: number;
+  envelope?: any;
 }
 
 export interface SendMailRequest {

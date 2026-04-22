@@ -17,7 +17,7 @@ export const mailFetchWorker = new Worker(
     logInfo('Processing mail fetch job', { accountId, tenantId });
     
     try {
-      await mailFetchService.fetchMails(accountId, tenantId);
+      await mailFetchService.fetchAllAccounts();
       logInfo('Mail fetch completed', { accountId, tenantId });
     } catch (error: any) {
       logError(error, { accountId, tenantId });

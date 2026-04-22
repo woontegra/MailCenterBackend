@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import jwt from 'jsonwebtoken';
 import { query } from '../config/database';
 import { hashPassword, comparePassword, generateToken } from '../utils/auth';
 import { RegisterRequest, LoginRequest, AuthResponse } from '../types';

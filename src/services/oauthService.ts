@@ -49,13 +49,13 @@ export class OAuthService {
     };
   }
 
-  getMicrosoftAuthUrl(state: string): string {
+  async getMicrosoftAuthUrl(state: string): Promise<string> {
     const authCodeUrlParameters = {
       scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send', 'offline_access'],
       redirectUri: `${process.env.BACKEND_URL}/api/oauth/microsoft/callback`,
       state,
     };
-    return this.msalClient.getAuthCodeUrl(authCodeUrlParameters);
+    return await this.msalClient.getAuthCodeUrl(authCodeUrlParameters);
   }
 
   async getMicrosoftTokens(code: string) {
@@ -64,23 +64,23 @@ export class OAuthService {
       scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send', 'offline_access'],
       redirectUri: `${process.env.BACKEND_URL}/api/oauth/microsoft/callback`,
     };
-    const response = await this.msalClient.acquireTokenByCode(tokenRequest);
+    const response: any = await this.msalClient.acquireTokenByCode(tokenRequest);
     return {
       access_token: response.accessToken,
-      refresh_token: response.refreshToken,
-      expires_at: new Date(Date.now() + (response.expiresIn || 3600) * 1000),
+      refresh_token: response.account?.homeAccountId || '',
+      expires_at: new Date(response.expiresOn || Date.now() + 3600000),
     };
   }
 
   async refreshMicrosoftToken(refreshToken: string) {
-    const tokenRequest = {
-      refreshToken,
+    const tokenRequest: any = {
+      account: { homeAccountId: refreshToken } as any,
       scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send'],
     };
-    const response = await this.msalClient.acquireTokenByRefreshToken(tokenRequest);
+    const response: any = await this.msalClient.acquireTokenSilent(tokenRequest);
     return {
       access_token: response.accessToken,
-      expires_at: new Date(Date.now() + (response.expiresIn || 3600) * 1000),
+      expires_at: new Date(response.expiresOn || Date.now() + 3600000),
     };
   }
 
@@ -108,7 +108,7 @@ export class OAuthService {
         grant_type: 'authorization_code',
       }),
     });
-    const data = await response.json();
+    const data: any = await response.json();
     return {
       access_token: data.access_token,
       refresh_token: data.refresh_token,
@@ -128,7 +128,7 @@ export class OAuthService {
         grant_type: 'refresh_token',
       }),
     });
-    const data = await response.json();
+    const data: any = await response.json();
     return {
       access_token: data.access_token,
       expires_at: new Date(Date.now() + data.expires_in * 1000),

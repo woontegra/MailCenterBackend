@@ -5,7 +5,7 @@ import { query } from '../config/database';
 
 const router = Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2024-11-20.acacia',
+  apiVersion: '2024-11-20.acacia' as any,
 });
 
 router.use(authenticate);
@@ -87,12 +87,12 @@ router.post('/webhook', async (req, res) => {
 
     switch (event.type) {
       case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session;
+        const session = event.data.object as any;
         const tenantId = parseInt(session.metadata?.tenantId || '0');
         const planId = parseInt(session.metadata?.planId || '0');
 
         if (session.subscription) {
-          const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
+          const subscription: any = await stripe.subscriptions.retrieve(session.subscription as string);
           
           await query(
             `INSERT INTO subscriptions 
@@ -107,8 +107,8 @@ router.post('/webhook', async (req, res) => {
               subscription.id,
               subscription.customer,
               subscription.status,
-              new Date(subscription.current_period_start * 1000),
-              new Date(subscription.current_period_end * 1000),
+              new Date((subscription.current_period_start || 0) * 1000),
+              new Date((subscription.current_period_end || 0) * 1000),
             ]
           );
 
@@ -122,7 +122,7 @@ router.post('/webhook', async (req, res) => {
 
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
-        const subscription = event.data.object as Stripe.Subscription;
+        const subscription: any = event.data.object;
         
         await query(
           `UPDATE subscriptions 
@@ -152,7 +152,7 @@ router.post('/webhook', async (req, res) => {
       }
 
       case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice;
+        const invoice: any = event.data.object;
         const subResult = await query(
           'SELECT id, tenant_id FROM subscriptions WHERE stripe_subscription_id = $1',
           [invoice.subscription]

@@ -35,7 +35,7 @@ router.get('/google/callback', async (req, res) => {
     const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
-    const userInfo = await userInfoRes.json();
+    const userInfo: any = await userInfoRes.json();
 
     const result = await query(
       `INSERT INTO mail_accounts 
@@ -98,7 +98,7 @@ router.get('/microsoft/callback', async (req, res) => {
     const userInfoRes = await fetch('https://graph.microsoft.com/v1.0/me', {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
-    const userInfo = await userInfoRes.json();
+    const userInfo: any = await userInfoRes.json();
 
     const result = await query(
       `INSERT INTO mail_accounts 
@@ -161,7 +161,7 @@ router.get('/yahoo/callback', async (req, res) => {
     const userInfoRes = await fetch('https://api.login.yahoo.com/openid/v1/userinfo', {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
-    const userInfo = await userInfoRes.json();
+    const userInfo: any = await userInfoRes.json();
 
     const result = await query(
       `INSERT INTO mail_accounts 

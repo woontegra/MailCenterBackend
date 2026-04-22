@@ -55,11 +55,11 @@ export class MailFetchService {
 
       await imapService.connect(account);
       const lastUid = account.last_sync_uid || 0;
-      const fetchRange = lastUid > 0 ? `${lastUid + 1}:*` : '1:*';
+      const fetchRange = `${lastUid + 1}:*`;
       
       console.log(`Fetching from UID ${lastUid + 1} for ${account.email}`);
       
-      const messages = await imapService.fetchRecentMails(fetchRange);
+      const messages: any[] = await imapService.fetchRecentMails(fetchRange);
 
       let fetchedCount = 0;
       let maxUid = lastUid;
@@ -78,12 +78,7 @@ export class MailFetchService {
           );
           
           if (existsResult.rows.length === 0) {
-            if (exceededTenants.has(account.tenant_id!)) {
-              console.log(`Skipping mail for tenant ${account.tenant_id} - quota exceeded`);
-              continue;
-            }
-            
-            const savedMail = await this.saveMail(account.id, account.tenant_id!, message);
+            const savedMail: any = await this.saveMail(account.id, account.tenant_id!, message);
             fetchedCount++;
             
             const mailSize = calculateMailSize(savedMail);

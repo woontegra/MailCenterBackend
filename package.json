@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1034.0",
+    "@aws-sdk/s3-request-presigner": "^3.1034.0",
     "@azure/msal-node": "^5.1.4",
     "@sentry/node": "^10.49.0",
     "bcrypt": "^5.1.1",
