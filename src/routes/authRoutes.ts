@@ -112,6 +112,24 @@ router.post('/login', async (req: Request, res: Response) => {
       role: user.role || 'user',
     });
 
+    await query(
+      'UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [user.id]
+    );
+
+    const tokenHash = require('crypto').createHash('sha256').update(token).digest('hex');
+    await query(
+      `INSERT INTO login_history (user_id, ip_address, user_agent, device_info)
+       VALUES ($1, $2, $3, $4)`,
+      [user.id, req.ip, req.headers['user-agent'], req.headers['user-agent']]
+    );
+
+    await query(
+      `INSERT INTO user_sessions (user_id, token_hash, ip_address, user_agent, device_info, expires_at)
+       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days')`,
+      [user.id, tokenHash, req.ip, req.headers['user-agent'], req.headers['user-agent']]
+    );
+
     res.json({
       success: true,
       token,

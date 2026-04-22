@@ -18,6 +18,7 @@ const migrations = [
   'oauth_storage_upgrade.sql',
   'enterprise_upgrade.sql',
   'super_admin_upgrade.sql',
+  'user_profile_upgrade.sql',
 ];
 
 async function runMigrations() {

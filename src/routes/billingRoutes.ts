@@ -4,14 +4,21 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { query } from '../config/database';
 
 const router = Router();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2024-11-20.acacia' as any,
-});
+
+let stripe: Stripe | null = null;
+if (process.env.STRIPE_SECRET_KEY) {
+  stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: '2024-11-20.acacia' as any,
+  });
+}
 
 router.use(authenticate);
 
 router.post('/checkout', async (req: AuthRequest, res: Response) => {
   try {
+    if (!stripe) {
+      return res.status(503).json({ error: 'Stripe is not configured' });
+    }
     const { planId, billingPeriod } = req.body;
     const tenantId = req.user!.tenantId;
 
@@ -75,8 +82,16 @@ router.post('/checkout', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.post('/webhook', async (req, res) => {
+router.post('/webhook', async (req: Request, res: Response) => {
   const sig = req.headers['stripe-signature'] as string;
+
+  if (!sig) {
+    return res.status(400).json({ error: 'Missing signature' });
+  }
+
+  if (!stripe) {
+    return res.status(503).json({ error: 'Stripe is not configured' });
+  }
 
   try {
     const event = stripe.webhooks.constructEvent(
@@ -187,6 +202,9 @@ router.post('/webhook', async (req, res) => {
 
 router.get('/subscription', async (req: AuthRequest, res: Response) => {
   try {
+    if (!stripe) {
+      return res.status(503).json({ error: 'Stripe is not configured' });
+    }
     const tenantId = req.user!.tenantId;
 
     const result = await query(
@@ -229,6 +247,9 @@ router.get('/usage', async (req: AuthRequest, res: Response) => {
 
 router.post('/cancel', async (req: AuthRequest, res: Response) => {
   try {
+    if (!stripe) {
+      return res.status(503).json({ error: 'Stripe is not configured' });
+    }
     const tenantId = req.user!.tenantId;
 
     const subResult = await query(

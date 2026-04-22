@@ -68,6 +68,7 @@ import webhookRoutes from './routes/webhookRoutes';
 import exportRoutes from './routes/exportRoutes';
 import whiteLabelRoutes from './routes/whiteLabelRoutes';
 import superAdminRoutes from './routes/superAdminRoutes';
+import profileRoutes from './routes/profileRoutes';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
@@ -81,6 +82,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/white-label', whiteLabelRoutes);
 app.use('/api/super-admin', superAdminRoutes);
+app.use('/api/user', profileRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/send-mail', sendMailRoutes);
 app.use('/api/auto-tag', autoTagRoutes);
