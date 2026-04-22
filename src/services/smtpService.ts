@@ -3,7 +3,7 @@ import { MailAccount, SendMailRequest, SendMailResponse } from '../types';
 import { query } from '../config/database';
 
 export class SmtpService {
-  private createTransporter(account: MailAccount): Transporter {
+  private createTransporter(account: MailAccount, options?: any): Transporter {
     if (!account.smtp_host || !account.smtp_user) {
       throw new Error('SMTP configuration is incomplete for this account');
     }
@@ -29,10 +29,14 @@ export class SmtpService {
       throw new Error('No authentication method available');
     }
 
-    return nodemailer.createTransporter(config);
+    if (options) {
+      Object.assign(config, options);
+    }
+
+    return nodemailer.createTransport(config);
   }
 
-  async sendMail(request: SendMailRequest, tenantId: number): Promise<SendMailResponse> {
+  async sendMail(request: SendMailRequest, tenantId: number, options?: any): Promise<SendMailResponse> {
     try {
       const accountResult = await query(
         'SELECT * FROM mail_accounts WHERE id = $1 AND tenant_id = $2 AND is_active = true',
@@ -40,10 +44,7 @@ export class SmtpService {
       );
 
       if (accountResult.rows.length === 0) {
-        return {
-          success: false,
-          error: 'Account not found or inactive',
-        };
+        throw new Error('Mail account not found or inactive');
       }
 
       const account: MailAccount = accountResult.rows[0];

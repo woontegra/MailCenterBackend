@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import { query } from '../config/database';
 import { hashPassword, comparePassword, generateToken } from '../utils/auth';
 import { RegisterRequest, LoginRequest, AuthResponse } from '../types';
@@ -48,19 +47,20 @@ router.post('/register', async (req: Request, res: Response) => {
       [tenantId]
     );
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email, tenantId: user.tenant_id, role: user.role || 'user' },
-      process.env.JWT_SECRET || 'secret',
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-    );
+    const token = generateToken({
+      userId: newUser.id,
+      email: newUser.email,
+      tenantId: tenantId,
+      role: 'admin',
+    });
 
     res.status(201).json({
       success: true,
       token,
       user: {
-        id: user.id,
-        email: user.email,
-        tenant_id: user.tenant_id,
+        id: newUser.id,
+        email: newUser.email,
+        tenant_id: newUser.tenant_id,
       },
     } as AuthResponse);
   } catch (error: any) {
@@ -109,6 +109,7 @@ router.post('/login', async (req: Request, res: Response) => {
       userId: user.id,
       email: user.email,
       tenantId: user.tenant_id,
+      role: user.role || 'user',
     });
 
     res.json({
