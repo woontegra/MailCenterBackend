@@ -1,12 +1,13 @@
 import { Router, Response } from 'express';
 import { query } from '../config/database';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { checkUsageLimit, trackUsage } from '../middleware/usageLimit';
 
 const router = Router();
 
 router.use(authenticate);
 
-router.post('/accounts', async (req: AuthRequest, res: Response) => {
+router.post('/', checkUsageLimit('account'), async (req: AuthRequest, res: Response) => {
   try {
     const {
       name,
@@ -49,6 +50,8 @@ router.post('/accounts', async (req: AuthRequest, res: Response) => {
         tenantId
       ]
     );
+
+    await trackUsage(tenantId, req.user!.userId, 'account_create', 'mail_account', result.rows[0].id);
 
     res.status(201).json(result.rows[0]);
   } catch (error: any) {

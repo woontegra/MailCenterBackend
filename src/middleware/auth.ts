@@ -3,7 +3,12 @@ import { verifyToken } from '../utils/auth';
 import { AuthPayload } from '../types';
 
 export interface AuthRequest extends Request {
-  user?: AuthPayload;
+  user?: {
+    userId: number;
+    email: string;
+    tenantId: number;
+    role: string;
+  };
 }
 
 export const authenticate = (
@@ -27,9 +32,34 @@ export const authenticate = (
       return;
     }
 
-    req.user = payload;
+    const decoded = payload as {
+      userId: number;
+      email: string;
+      tenantId: number;
+      role: string;
+    };
+
+    req.user = {
+      userId: decoded.userId,
+      email: decoded.email,
+      tenantId: decoded.tenantId,
+      role: decoded.role || 'user',
+    };
+
     next();
   } catch (error) {
     res.status(401).json({ error: 'Authentication failed' });
+  }
+};
+
+export const isSuperAdmin = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): void => {
+  if (req.user && req.user.role === 'superadmin') {
+    next();
+  } else {
+    res.status(403).json({ error: 'Forbidden' });
   }
 };

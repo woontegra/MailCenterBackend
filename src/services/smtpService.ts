@@ -4,19 +4,32 @@ import { query } from '../config/database';
 
 export class SmtpService {
   private createTransporter(account: MailAccount): Transporter {
-    if (!account.smtp_host || !account.smtp_user || !account.smtp_password) {
+    if (!account.smtp_host || !account.smtp_user) {
       throw new Error('SMTP configuration is incomplete for this account');
     }
 
-    return nodemailer.createTransport({
+    const config: any = {
       host: account.smtp_host,
       port: account.smtp_port || 587,
       secure: account.smtp_secure || false,
-      auth: {
+    };
+
+    if (account.auth_type === 'oauth' && account.access_token) {
+      config.auth = {
+        type: 'OAuth2',
+        user: account.smtp_user,
+        accessToken: account.access_token,
+      };
+    } else if (account.smtp_password) {
+      config.auth = {
         user: account.smtp_user,
         pass: account.smtp_password,
-      },
-    });
+      };
+    } else {
+      throw new Error('No authentication method available');
+    }
+
+    return nodemailer.createTransporter(config);
   }
 
   async sendMail(request: SendMailRequest, tenantId: number): Promise<SendMailResponse> {

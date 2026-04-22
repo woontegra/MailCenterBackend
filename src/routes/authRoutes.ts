@@ -47,11 +47,11 @@ router.post('/register', async (req: Request, res: Response) => {
       [tenantId]
     );
 
-    const token = generateToken({
-      userId: user.id,
-      email: user.email,
-      tenantId: user.tenant_id,
-    });
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, tenantId: user.tenant_id, role: user.role || 'user' },
+      process.env.JWT_SECRET || 'secret',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
 
     res.status(201).json({
       success: true,

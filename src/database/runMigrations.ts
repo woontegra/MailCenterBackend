@@ -14,6 +14,10 @@ const migrations = [
   'schema_upgrade.sql',
   'add_company_name.sql',
   'mail_operations_upgrade.sql',
+  'saas_upgrade.sql',
+  'oauth_storage_upgrade.sql',
+  'enterprise_upgrade.sql',
+  'super_admin_upgrade.sql',
 ];
 
 async function runMigrations() {

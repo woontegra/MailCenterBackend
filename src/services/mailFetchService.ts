@@ -2,6 +2,10 @@ import { query } from '../config/database';
 import { ImapService } from './imapService';
 import { AutoTagService } from './autoTagService';
 import { MailAccount } from '../types';
+import { emitToTenant } from './socketService';
+import { trackUsage } from '../middleware/usageLimit';
+import { updateStorageUsage, calculateMailSize } from '../middleware/storageQuota';
+import webhookService from './webhookService';
 
 export class MailFetchService {
   private autoTagService: AutoTagService;
@@ -12,13 +16,21 @@ export class MailFetchService {
 
   async fetchAllAccounts(): Promise<void> {
     console.log('Starting mail fetch for all accounts...');
+    
+    const quotaCheck = await query(
+      'SELECT id FROM tenants WHERE storage_used_mb >= storage_limit_mb'
+    );
+    const exceededTenants = new Set(quotaCheck.rows.map(r => r.id));
 
     try {
-      const result = await query(
-        'SELECT * FROM mail_accounts WHERE is_active = true'
+      const accountsResult = await query(
+        `SELECT * FROM mail_accounts 
+         WHERE is_active = true AND tenant_id NOT IN (
+           SELECT id FROM tenants WHERE storage_used_mb >= storage_limit_mb
+         )`
       );
 
-      const accounts: MailAccount[] = result.rows;
+      const accounts: MailAccount[] = accountsResult.rows;
 
       if (accounts.length === 0) {
         console.log('No active accounts found');
@@ -42,17 +54,69 @@ export class MailFetchService {
       console.log(`Fetching mails for ${account.email}...`);
 
       await imapService.connect(account);
-      const messages = await imapService.fetchRecentMails(50);
+      const lastUid = account.last_sync_uid || 0;
+      const fetchRange = lastUid > 0 ? `${lastUid + 1}:*` : '1:*';
+      
+      console.log(`Fetching from UID ${lastUid + 1} for ${account.email}`);
+      
+      const messages = await imapService.fetchRecentMails(fetchRange);
 
-      console.log(`Found ${messages.length} messages for ${account.email}`);
-
-      for (const msg of messages) {
-        await this.saveMail(account.id, account.tenant_id!, msg);
+      let fetchedCount = 0;
+      let maxUid = lastUid;
+      
+      for (const message of messages) {
+        try {
+          const messageUid = message.uid;
+          if (messageUid > maxUid) {
+            maxUid = messageUid;
+          }
+          
+          const messageId = message.envelope?.messageId || `${account.id}-${messageUid}`;
+          const existsResult = await query(
+            'SELECT id FROM mails WHERE message_id = $1 AND account_id = $2',
+            [messageId, account.id]
+          );
+          
+          if (existsResult.rows.length === 0) {
+            if (exceededTenants.has(account.tenant_id!)) {
+              console.log(`Skipping mail for tenant ${account.tenant_id} - quota exceeded`);
+              continue;
+            }
+            
+            const savedMail = await this.saveMail(account.id, account.tenant_id!, message);
+            fetchedCount++;
+            
+            const mailSize = calculateMailSize(savedMail);
+            const mailSizeMB = mailSize / (1024 * 1024);
+            await updateStorageUsage(account.tenant_id!, mailSizeMB);
+            
+            emitToTenant(account.tenant_id!, 'new_mail', {
+              id: savedMail.id,
+              subject: savedMail.subject,
+              from: savedMail.from_address,
+              accountId: account.id,
+            });
+            
+            await trackUsage(account.tenant_id!, null, 'mail_fetch', 'mail', savedMail.id);
+            
+            await webhookService.triggerWebhook(account.tenant_id!, 'mail.received', {
+              mailId: savedMail.id,
+              subject: savedMail.subject,
+              from: savedMail.from_address,
+              accountId: account.id,
+            });
+          }
+        } catch (error) {
+          console.error('Error saving message:', error);
+        }
       }
 
-      console.log(`✓ Saved mails for ${account.email}`);
-    } catch (error) {
-      console.error(`✗ Error fetching mails for ${account.email}:`, error);
+      await query(
+        'UPDATE mail_accounts SET last_sync_uid = $1, last_sync_at = CURRENT_TIMESTAMP, sync_status = $2, sync_error = NULL WHERE id = $3',
+        [maxUid, 'idle', account.id]
+      );
+
+      console.log(`✓ Fetched ${fetchedCount} new messages for ${account.email}`);
     } finally {
       await imapService.disconnect();
     }
