@@ -1,11 +1,11 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import Stripe from 'stripe';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { query } from '../config/database';
 
 const router = Router();
 
-let stripe: Stripe | null = null;
+let stripe: InstanceType<typeof Stripe> | null = null;
 if (process.env.STRIPE_SECRET_KEY) {
   stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
     apiVersion: '2024-11-20.acacia' as any,
@@ -82,15 +82,17 @@ router.post('/checkout', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.post('/webhook', async (req: Request, res: Response) => {
+router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
   const sig = req.headers['stripe-signature'] as string;
 
   if (!sig) {
-    return res.status(400).json({ error: 'Missing signature' });
+    res.status(400).json({ error: 'Missing signature' });
+    return;
   }
 
   if (!stripe) {
-    return res.status(503).json({ error: 'Stripe is not configured' });
+    res.status(503).json({ error: 'Stripe is not configured' });
+    return;
   }
 
   try {
@@ -194,9 +196,11 @@ router.post('/webhook', async (req: Request, res: Response) => {
     }
 
     res.json({ received: true });
+    return;
   } catch (error: any) {
     console.error('Webhook error:', error);
     res.status(400).send(`Webhook Error: ${error.message}`);
+    return;
   }
 });
 

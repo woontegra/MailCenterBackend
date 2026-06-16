@@ -4,7 +4,8 @@ import { query } from '../config/database';
 
 export class OAuthService {
   private googleClient: any;
-  private msalClient: ConfidentialClientApplication;
+  /** MSAL requires a non-empty client secret; omit construction until env is set. */
+  private msalClient: ConfidentialClientApplication | null = null;
 
   constructor() {
     this.googleClient = new google.auth.OAuth2(
@@ -13,13 +14,26 @@ export class OAuthService {
       `${process.env.BACKEND_URL}/api/oauth/google/callback`
     );
 
-    this.msalClient = new ConfidentialClientApplication({
-      auth: {
-        clientId: process.env.MICROSOFT_CLIENT_ID || '',
-        clientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
-        authority: 'https://login.microsoftonline.com/common',
-      },
-    });
+    const microsoftClientId = (process.env.MICROSOFT_CLIENT_ID || '').trim();
+    const microsoftClientSecret = (process.env.MICROSOFT_CLIENT_SECRET || '').trim();
+    if (microsoftClientId && microsoftClientSecret) {
+      this.msalClient = new ConfidentialClientApplication({
+        auth: {
+          clientId: microsoftClientId,
+          clientSecret: microsoftClientSecret,
+          authority: 'https://login.microsoftonline.com/common',
+        },
+      });
+    }
+  }
+
+  private getMsalOrThrow(): ConfidentialClientApplication {
+    if (!this.msalClient) {
+      throw new Error(
+        'Microsoft OAuth is not configured. Set MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET in your environment.'
+      );
+    }
+    return this.msalClient;
   }
 
   getGoogleAuthUrl(state: string): string {
@@ -50,21 +64,23 @@ export class OAuthService {
   }
 
   async getMicrosoftAuthUrl(state: string): Promise<string> {
+    const msal = this.getMsalOrThrow();
     const authCodeUrlParameters = {
       scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send', 'offline_access'],
       redirectUri: `${process.env.BACKEND_URL}/api/oauth/microsoft/callback`,
       state,
     };
-    return await this.msalClient.getAuthCodeUrl(authCodeUrlParameters);
+    return await msal.getAuthCodeUrl(authCodeUrlParameters);
   }
 
   async getMicrosoftTokens(code: string) {
+    const msal = this.getMsalOrThrow();
     const tokenRequest = {
       code,
       scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send', 'offline_access'],
       redirectUri: `${process.env.BACKEND_URL}/api/oauth/microsoft/callback`,
     };
-    const response: any = await this.msalClient.acquireTokenByCode(tokenRequest);
+    const response: any = await msal.acquireTokenByCode(tokenRequest);
     return {
       access_token: response.accessToken,
       refresh_token: response.account?.homeAccountId || '',
@@ -73,11 +89,12 @@ export class OAuthService {
   }
 
   async refreshMicrosoftToken(refreshToken: string) {
+    const msal = this.getMsalOrThrow();
     const tokenRequest: any = {
       account: { homeAccountId: refreshToken } as any,
       scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send'],
     };
-    const response: any = await this.msalClient.acquireTokenSilent(tokenRequest);
+    const response: any = await msal.acquireTokenSilent(tokenRequest);
     return {
       access_token: response.accessToken,
       expires_at: new Date(response.expiresOn || Date.now() + 3600000),
