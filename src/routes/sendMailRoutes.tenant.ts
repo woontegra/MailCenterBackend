@@ -8,7 +8,7 @@ const smtpService = new SmtpService();
 
 router.use(authenticate);
 
-router.post('/send-mail', async (req: AuthRequest, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const { accountId, to, subject, text, html }: SendMailRequest = req.body;
     const tenantId = req.user!.tenantId;

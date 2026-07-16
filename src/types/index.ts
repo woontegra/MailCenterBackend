@@ -121,4 +121,5 @@ export interface AuthPayload {
   userId: number;
   email: string;
   tenantId: number;
+  role?: string;
 }

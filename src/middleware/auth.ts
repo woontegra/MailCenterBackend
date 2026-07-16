@@ -57,7 +57,7 @@ export const isSuperAdmin = (
   res: Response,
   next: NextFunction
 ): void => {
-  if (req.user && req.user.role === 'superadmin') {
+  if (req.user && req.user.role === 'super_admin') {
     next();
   } else {
     res.status(403).json({ error: 'Forbidden' });

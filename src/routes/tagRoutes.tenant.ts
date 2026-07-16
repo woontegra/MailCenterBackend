@@ -6,7 +6,7 @@ const router = Router();
 
 router.use(authenticate);
 
-router.get('/tags', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
     const result = await query(
@@ -20,7 +20,7 @@ router.get('/tags', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.post('/tags', async (req: AuthRequest, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const { name, color } = req.body;
     const tenantId = req.user!.tenantId;

@@ -19,6 +19,13 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 5000;
+const isProduction = process.env.NODE_ENV === 'production';
+
+if (isProduction && !process.env.FRONTEND_URL) {
+  throw new Error(
+    'Configuration error: FRONTEND_URL must be set in production for secure CORS.'
+  );
+}
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -34,7 +41,7 @@ const authLimiter = rateLimit({
 
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
+  origin: isProduction ? process.env.FRONTEND_URL! : (process.env.FRONTEND_URL || '*'),
   credentials: true,
 }));
 app.use('/api/auth', authLimiter);
@@ -74,6 +81,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/mails', mailRoutes);
 app.use('/api/threads', threadRoutes);
+app.use('/api/tags', tagRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/oauth', oauthRoutes);

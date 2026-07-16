@@ -7,7 +7,7 @@ const autoTagService = new AutoTagService();
 
 router.use(authenticate);
 
-router.get('/auto-tag/keywords', async (req: AuthRequest, res: Response) => {
+router.get('/keywords', async (req: AuthRequest, res: Response) => {
   try {
     const keywords = autoTagService.getKeywords();
     res.json(keywords);
@@ -17,7 +17,7 @@ router.get('/auto-tag/keywords', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.post('/auto-tag/keywords', async (req: AuthRequest, res: Response) => {
+router.post('/keywords', async (req: AuthRequest, res: Response) => {
   try {
     const { tagName, keywords } = req.body;
 

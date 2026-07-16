@@ -33,8 +33,8 @@ router.post('/register', async (req: Request, res: Response) => {
     const tenantId = tenantResult.rows[0].id;
 
     const userResult = await query(
-      'INSERT INTO users (email, password, tenant_id) VALUES ($1, $2, $3) RETURNING id, email, tenant_id',
-      [email, hashedPassword, tenantId]
+      'INSERT INTO users (email, password, tenant_id, role) VALUES ($1, $2, $3, $4) RETURNING id, email, tenant_id, role',
+      [email, hashedPassword, tenantId, 'admin']
     );
 
     const user = userResult.rows[0];
@@ -84,7 +84,7 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     const userResult = await query(
-      'SELECT id, email, password, tenant_id FROM users WHERE email = $1',
+      'SELECT id, email, password, tenant_id, role FROM users WHERE email = $1',
       [email]
     );
 
@@ -137,6 +137,7 @@ router.post('/login', async (req: Request, res: Response) => {
         id: user.id,
         email: user.email,
         tenant_id: user.tenant_id,
+        role: user.role || 'member',
       },
     } as AuthResponse);
   } catch (error) {
@@ -164,7 +165,7 @@ router.get('/me', async (req: Request, res: Response) => {
     }
 
     const userResult = await query(
-      'SELECT id, email, tenant_id FROM users WHERE id = $1',
+      'SELECT id, email, tenant_id, role FROM users WHERE id = $1',
       [payload.userId]
     );
 

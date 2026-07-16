@@ -63,7 +63,7 @@ router.post('/', checkUsageLimit('account'), async (req: AuthRequest, res: Respo
   }
 });
 
-router.get('/accounts', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
     const result = await query(
@@ -77,7 +77,7 @@ router.get('/accounts', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.patch('/accounts/:id', async (req: AuthRequest, res: Response) => {
+router.patch('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { smtp_host, smtp_port, smtp_user, smtp_password, smtp_secure } = req.body;
@@ -103,7 +103,7 @@ router.patch('/accounts/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.patch('/accounts/:id/toggle', async (req: AuthRequest, res: Response) => {
+router.patch('/:id/toggle', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const tenantId = req.user!.tenantId;
@@ -126,7 +126,7 @@ router.patch('/accounts/:id/toggle', async (req: AuthRequest, res: Response) => 
   }
 });
 
-router.delete('/accounts/:id', async (req: AuthRequest, res: Response) => {
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const tenantId = req.user!.tenantId;

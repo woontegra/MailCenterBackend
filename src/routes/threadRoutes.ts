@@ -4,7 +4,7 @@ import { authenticate, AuthRequest } from '../middleware/auth'
 
 const router = Router()
 
-router.get('/threads', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { page = 1, limit = 50, status, assigned_to } = req.query
     const offset = (Number(page) - 1) * Number(limit)
@@ -31,8 +31,8 @@ router.get('/threads', authenticate, async (req: AuthRequest, res: Response) => 
         MAX(m.date) as last_message_date,
         json_agg(DISTINCT m.from_address) as participants,
         MAX(m.id) as last_mail_id,
-        MAX(m.is_read) as is_read,
-        MAX(m.is_starred) as is_starred,
+        BOOL_AND(COALESCE(m.is_read, false)) as is_read,
+        BOOL_OR(COALESCE(m.is_starred, false)) as is_starred,
         MAX(m.status) as status,
         MAX(m.assigned_to) as assigned_to
       FROM mails m
@@ -49,7 +49,7 @@ router.get('/threads', authenticate, async (req: AuthRequest, res: Response) => 
   }
 })
 
-router.get('/threads/:threadId/messages', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/:threadId/messages', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { threadId } = req.params
 

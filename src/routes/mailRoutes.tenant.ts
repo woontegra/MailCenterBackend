@@ -6,7 +6,7 @@ const router = Router();
 
 router.use(authenticate);
 
-router.get('/mails', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
     const { 
@@ -86,17 +86,59 @@ router.get('/mails', async (req: AuthRequest, res: Response) => {
     sqlQuery += ` GROUP BY m.id, ma.email, ma.name ORDER BY m.date DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`
     params.push(limit, offset)
     
-    const countQuery = `
+    let countQuery = `
       SELECT COUNT(DISTINCT m.id) as total
       FROM mails m
       WHERE m.tenant_id = $1 AND m.is_deleted = $2
-      ${is_read !== undefined ? ` AND m.is_read = $3` : ''}
-      ${is_starred !== undefined ? ` AND m.is_starred = $${params.findIndex(p => p === (is_starred === 'true')) + 1}` : ''}
     `
+    const countParams: any[] = [tenantId, is_deleted]
+    let countParamIndex = 3
+
+    if (account_id) {
+      countQuery += ` AND m.account_id = $${countParamIndex++}`
+      countParams.push(account_id)
+    }
+    if (is_read !== undefined) {
+      countQuery += ` AND m.is_read = $${countParamIndex++}`
+      countParams.push(is_read === 'true')
+    }
+    if (is_starred !== undefined) {
+      countQuery += ` AND m.is_starred = $${countParamIndex++}`
+      countParams.push(is_starred === 'true')
+    }
+    if (is_sent !== undefined) {
+      countQuery += ` AND m.is_sent = $${countParamIndex++}`
+      countParams.push(is_sent === 'true')
+    }
+    if (search) {
+      countQuery += ` AND (m.subject ILIKE $${countParamIndex} OR m.from_address ILIKE $${countParamIndex} OR m.body_preview ILIKE $${countParamIndex})`
+      countParams.push(`%${search}%`)
+      countParamIndex++
+    }
+    if (from) {
+      countQuery += ` AND m.from_address ILIKE $${countParamIndex++}`
+      countParams.push(`%${from}%`)
+    }
+    if (subject) {
+      countQuery += ` AND m.subject ILIKE $${countParamIndex++}`
+      countParams.push(`%${subject}%`)
+    }
+    if (date_from) {
+      countQuery += ` AND m.date >= $${countParamIndex++}`
+      countParams.push(date_from)
+    }
+    if (date_to) {
+      countQuery += ` AND m.date <= $${countParamIndex++}`
+      countParams.push(date_to)
+    }
+    if (tag_id) {
+      countQuery += ` AND EXISTS (SELECT 1 FROM mail_tags WHERE mail_id = m.id AND tag_id = $${countParamIndex++})`
+      countParams.push(tag_id)
+    }
 
     const [result, countResult] = await Promise.all([
       query(sqlQuery, params),
-      query(countQuery, params.slice(0, 3))
+      query(countQuery, countParams)
     ])
     
     const total = parseInt(countResult.rows[0]?.total || 0)
@@ -118,7 +160,7 @@ router.get('/mails', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.patch('/mails/:id/read', async (req: AuthRequest, res: Response) => {
+router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { is_read } = req.body;
@@ -141,7 +183,7 @@ router.patch('/mails/:id/read', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.patch('/mails/:id/star', async (req: AuthRequest, res: Response) => {
+router.patch('/:id/star', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { is_starred } = req.body;
@@ -164,7 +206,7 @@ router.patch('/mails/:id/star', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.delete('/mails/:id', async (req: AuthRequest, res: Response) => {
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const tenantId = req.user!.tenantId;
@@ -186,7 +228,7 @@ router.delete('/mails/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.post('/mails/:id/tags', async (req: AuthRequest, res: Response) => {
+router.post('/:id/tags', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { tag_id } = req.body;
@@ -205,7 +247,7 @@ router.post('/mails/:id/tags', async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.delete('/mails/:id/tags/:tag_id', async (req: AuthRequest, res: Response) => {
+router.delete('/:id/tags/:tag_id', async (req: AuthRequest, res: Response) => {
   try {
     const { id, tag_id } = req.params;
     const tenantId = req.user!.tenantId;

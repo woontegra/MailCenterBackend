@@ -3,10 +3,20 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const isProduction = process.env.NODE_ENV === 'production';
+const databaseUrl = process.env.DATABASE_URL;
+
+if (isProduction && !databaseUrl) {
+  throw new Error(
+    'Configuration error: DATABASE_URL is required in production. Use Railway PostgreSQL reference variable.'
+  );
+}
+
 // Use DATABASE_URL if available (Railway), otherwise use individual env vars
-const poolConfig = process.env.DATABASE_URL
+const poolConfig = databaseUrl
   ? {
-      connectionString: process.env.DATABASE_URL,
+      connectionString: databaseUrl,
+      ssl: isProduction ? { rejectUnauthorized: false } : undefined,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,

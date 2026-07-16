@@ -5,8 +5,15 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
+if (!process.env.DATABASE_URL) {
+  throw new Error(
+    'Configuration error: DATABASE_URL is required to run migrations.'
+  );
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
 });
 
 const migrations = [

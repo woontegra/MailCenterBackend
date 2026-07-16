@@ -5,6 +5,15 @@ import { AuthPayload } from '../types';
 const JWT_SECRET: string = process.env.JWT_SECRET || 'default_secret_change_this';
 const JWT_EXPIRES_IN: string = process.env.JWT_EXPIRES_IN || '7d';
 
+if (
+  process.env.NODE_ENV === 'production' &&
+  (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'default_secret_change_this')
+) {
+  throw new Error(
+    'Configuration error: JWT_SECRET must be set to a strong value in production.'
+  );
+}
+
 export const hashPassword = async (password: string): Promise<string> => {
   const saltRounds = 10;
   return await bcrypt.hash(password, saltRounds);
@@ -20,7 +29,7 @@ export const comparePassword = async (
 export const generateToken = (payload: AuthPayload & { role?: string }): string => {
   return jwt.sign(
     payload, 
-    process.env.JWT_SECRET || 'secret', 
+    JWT_SECRET, 
     { expiresIn: (process.env.JWT_EXPIRES_IN || '7d') as any }
   );
 };
