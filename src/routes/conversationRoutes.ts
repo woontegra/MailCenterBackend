@@ -138,7 +138,15 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       `SELECT c.*,
               b.name AS brand_name,
               b.accent_color AS brand_accent_color,
-              ct.display_name AS contact_display_name,
+              COALESCE(
+                NULLIF(BTRIM(CONCAT_WS(
+                  ' ',
+                  NULLIF(BTRIM(ct.first_name), ''),
+                  NULLIF(BTRIM(ct.last_name), '')
+                )), ''),
+                NULLIF(BTRIM(ct.company_name), ''),
+                NULLIF(BTRIM(c.participant_value), '')
+              ) AS contact_display_name,
               u.name AS assigned_user_name,
               u.email AS assigned_user_email
        FROM conversations c
