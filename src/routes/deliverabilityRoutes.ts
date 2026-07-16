@@ -174,12 +174,18 @@ router.patch('/:brandId/deliverability/settings', requirePermission('DELIVERABIL
     await ensureDomainHealthRow(tenantId, brandId, brand.domain);
 
     const updates: string[] = [];
+    const assignedColumns = new Set<string>();
     const values: unknown[] = [];
     let idx = 1;
+    const setColumn = (column: string, expression: string) => {
+      if (assignedColumns.has(column)) return;
+      assignedColumns.add(column);
+      updates.push(`${column} = ${expression}`);
+    };
 
     if (req.body.domain !== undefined) {
       if (req.body.domain === null || req.body.domain === '') {
-        updates.push(`domain = $${idx++}`);
+        setColumn('domain', `$${idx++}`);
         values.push(null);
         await query(
           `UPDATE brands SET domain = NULL, updated_at = CURRENT_TIMESTAMP
@@ -189,7 +195,7 @@ router.patch('/:brandId/deliverability/settings', requirePermission('DELIVERABIL
       } else {
         const normalized = normalizeDomainInput(req.body.domain);
         if (normalized.ok === false) return badRequest(res, normalized.error);
-        updates.push(`domain = $${idx++}`);
+        setColumn('domain', `$${idx++}`);
         values.push(normalized.domain);
         await query(
           `UPDATE brands SET domain = $1, updated_at = CURRENT_TIMESTAMP
@@ -198,29 +204,30 @@ router.patch('/:brandId/deliverability/settings', requirePermission('DELIVERABIL
         );
       }
       // Domain change resets check statuses lightly
-      updates.push(`overall_status = 'NOT_CHECKED'`);
-      updates.push(`spf_status = 'NOT_CHECKED'`);
-      updates.push(`dkim_status = 'NOT_CHECKED'`);
-      updates.push(`dmarc_status = 'NOT_CHECKED'`);
-      updates.push(`mx_status = 'NOT_CHECKED'`);
-      updates.push(`last_checked_at = NULL`);
+      setColumn('overall_status', `'NOT_CHECKED'`);
+      setColumn('spf_status', `'NOT_CHECKED'`);
+      setColumn('dkim_status', `'NOT_CHECKED'`);
+      setColumn('dmarc_status', `'NOT_CHECKED'`);
+      setColumn('mx_status', `'NOT_CHECKED'`);
+      setColumn('last_checked_at', 'NULL');
     }
 
     if (req.body.dkim_selector !== undefined || req.body.dkimSelector !== undefined) {
       const selectorRaw = req.body.dkim_selector ?? req.body.dkimSelector;
       if (selectorRaw === null || selectorRaw === '') {
-        updates.push(`dkim_selector = $${idx++}`);
+        setColumn('dkim_selector', `$${idx++}`);
         values.push(null);
-        updates.push(`dkim_status = 'NOT_CHECKED'`);
-        updates.push(`dkim_record = NULL`);
+        setColumn('dkim_status', `'NOT_CHECKED'`);
+        setColumn('dkim_record', 'NULL');
       } else {
         const selector = String(selectorRaw).trim().toLowerCase();
         if (!/^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/i.test(selector)) {
           return badRequest(res, 'Geçersiz DKIM selector');
         }
-        updates.push(`dkim_selector = $${idx++}`);
+        setColumn('dkim_selector', `$${idx++}`);
         values.push(selector);
-        updates.push(`dkim_status = 'NOT_CHECKED'`);
+        setColumn('dkim_status', `'NOT_CHECKED'`);
+        setColumn('dkim_record', 'NULL');
       }
     }
 
@@ -228,7 +235,7 @@ router.patch('/:brandId/deliverability/settings', requirePermission('DELIVERABIL
       return badRequest(res, 'Güncellenecek ayar yok');
     }
 
-    updates.push('updated_at = CURRENT_TIMESTAMP');
+    setColumn('updated_at', 'CURRENT_TIMESTAMP');
     values.push(tenantId, brandId);
 
     await query(
