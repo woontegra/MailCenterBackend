@@ -22,6 +22,7 @@ export interface MailAccount {
   imap_port: number;
   imap_user: string;
   imap_password: string;
+  imap_secure?: boolean;
   smtp_host?: string;
   smtp_port?: number;
   smtp_user?: string;
@@ -29,6 +30,9 @@ export interface MailAccount {
   smtp_secure?: boolean;
   tenant_id?: number;
   is_active: boolean;
+  imap_connection_status?: string;
+  smtp_connection_status?: string;
+  last_connection_test_at?: Date;
   provider?: string;
   auth_type?: string;
   access_token?: string;
@@ -79,14 +83,21 @@ export interface FetchedMessage {
   headers: any;
   uid?: number;
   envelope?: any;
+  inReplyTo?: string | null;
+  references?: string | null;
 }
 
 export interface SendMailRequest {
   accountId: number;
   to: string;
+  cc?: string;
+  bcc?: string;
   subject: string;
   text?: string;
   html?: string;
+  fromName?: string;
+  fromEmail?: string;
+  replyTo?: string;
 }
 
 export interface SendMailResponse {
@@ -121,5 +132,8 @@ export interface AuthPayload {
   userId: number;
   email: string;
   tenantId: number;
+  /** Platform role */
   role?: string;
+  tenantRole?: string;
+  permissionVersion?: number;
 }

@@ -1,108 +1,75 @@
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue } from 'bullmq';
 import redis from '../config/redis';
-import { MailFetchService } from '../services/mailFetchService';
-import { SmtpService } from '../services/smtpService';
-import { logError, logInfo } from '../config/logger';
+
+/** Producer-only queues. Workers live in mailWorkers.ts (worker process only). */
 
 export const mailFetchQueue = new Queue('mail-fetch', { connection: redis });
 export const mailSendQueue = new Queue('mail-send', { connection: redis });
 
-const mailFetchService = new MailFetchService();
-const smtpService = new SmtpService();
-
-export const mailFetchWorker = new Worker(
-  'mail-fetch',
-  async (job: Job) => {
-    const { accountId, tenantId } = job.data;
-    logInfo('Processing mail fetch job', { accountId, tenantId });
-    
-    try {
-      await mailFetchService.fetchAllAccounts();
-      logInfo('Mail fetch completed', { accountId, tenantId });
-    } catch (error: any) {
-      logError(error, { accountId, tenantId });
-      throw error;
-    }
-  },
-  {
-    connection: redis,
-    concurrency: 5,
-    limiter: {
-      max: 10,
-      duration: 1000,
-    },
-  }
-);
-
-export const mailSendWorker = new Worker(
-  'mail-send',
-  async (job: Job) => {
-    const { request, tenantId } = job.data;
-    logInfo('Processing mail send job', { tenantId });
-    
-    try {
-      const result = await smtpService.sendMail(request, tenantId);
-      logInfo('Mail sent successfully', { tenantId, messageId: result.messageId });
-      return result;
-    } catch (error: any) {
-      logError(error, { tenantId, request });
-      throw error;
-    }
-  },
-  {
-    connection: redis,
-    concurrency: 3,
-    limiter: {
-      max: 5,
-      duration: 1000,
-    },
-  }
-);
-
-mailFetchWorker.on('completed', (job) => {
-  logInfo(`Job ${job.id} completed`);
-});
-
-mailFetchWorker.on('failed', (job, err) => {
-  logError(new Error(`Job ${job?.id} failed: ${err.message}`));
-});
-
-mailSendWorker.on('completed', (job) => {
-  logInfo(`Send job ${job.id} completed`);
-});
-
-mailSendWorker.on('failed', (job, err) => {
-  logError(new Error(`Send job ${job?.id} failed: ${err.message}`));
-});
-
-export const addMailFetchJob = async (accountId: number, tenantId: number) => {
-  await mailFetchQueue.add(
+export async function addMailFetchJob(accountId: number, tenantId: number) {
+  return mailFetchQueue.add(
     'fetch',
     { accountId, tenantId },
     {
       attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 5000,
-      },
+      backoff: { type: 'exponential', delay: 5000 },
       removeOnComplete: 100,
       removeOnFail: 50,
     }
   );
-};
+}
 
-export const addMailSendJob = async (request: any, tenantId: number) => {
-  return await mailSendQueue.add(
-    'send',
+export async function enqueueOutboundSend(
+  outboundMessageId: number,
+  tenantId: number,
+  delayMs = 0
+) {
+  const jobId =
+    delayMs > 0
+      ? `outbound-${outboundMessageId}-d${Date.now()}`
+      : `outbound-${outboundMessageId}`;
+
+  try {
+    return await mailSendQueue.add(
+      'outbound-send',
+      { outboundMessageId, tenantId },
+      {
+        jobId,
+        delay: delayMs > 0 ? delayMs : undefined,
+        attempts: 1,
+        removeOnComplete: 200,
+        removeOnFail: 100,
+      }
+    );
+  } catch (error: any) {
+    const msg = String(error?.message || '');
+    if (msg.toLowerCase().includes('exists')) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** @deprecated Prefer enqueueOutboundSend — kept for compatibility */
+export async function addMailSendJob(request: any, tenantId: number) {
+  return mailSendQueue.add(
+    'send-legacy',
     { request, tenantId },
     {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 3000,
-      },
-      removeOnComplete: 100,
+      attempts: 1,
+      removeOnComplete: 50,
       removeOnFail: 50,
     }
   );
-};
+}
+
+export async function getMailSendQueueCounts() {
+  return mailSendQueue.getJobCounts(
+    'waiting',
+    'active',
+    'completed',
+    'failed',
+    'delayed',
+    'paused'
+  );
+}

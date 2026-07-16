@@ -6,6 +6,8 @@ import { emitToTenant } from './socketService';
 import { trackUsage } from '../middleware/usageLimit';
 import { updateStorageUsage, calculateMailSize } from '../middleware/storageQuota';
 import webhookService from './webhookService';
+import { migrateLegacyCredentials, withDecryptedCredentials } from '../utils/mailAccountUtils';
+import { linkInboundEmailToConversation } from './conversationService';
 
 export class MailFetchService {
   private autoTagService: AutoTagService;
@@ -49,11 +51,12 @@ export class MailFetchService {
 
   private async fetchAccountMails(account: MailAccount): Promise<void> {
     const imapService = new ImapService();
+    const decryptedAccount = withDecryptedCredentials(account);
 
     try {
       console.log(`Fetching mails for ${account.email}...`);
 
-      await imapService.connect(account);
+      await imapService.connect(decryptedAccount);
       const lastUid = account.last_sync_uid || 0;
       
       console.log(`Fetching from UID ${lastUid + 1} for ${account.email}`);
@@ -78,6 +81,7 @@ export class MailFetchService {
           
           if (existsResult.rows.length === 0) {
             const savedMail: any = await this.saveMail(account.id, account.tenant_id!, message);
+            if (!savedMail) continue;
             fetchedCount++;
             
             const mailSize = calculateMailSize(savedMail);
@@ -111,20 +115,26 @@ export class MailFetchService {
       );
 
       console.log(`✓ Fetched ${fetchedCount} new messages for ${account.email}`);
+
+      if (account.tenant_id) {
+        await migrateLegacyCredentials(account.id, account.tenant_id);
+      }
+    } catch (error: any) {
+      console.error(`✗ Failed to fetch mails for ${account.email}:`, error.message || error);
     } finally {
       await imapService.disconnect();
     }
   }
 
-  private async saveMail(accountId: number, tenantId: number, msg: any): Promise<void> {
+  private async saveMail(accountId: number, tenantId: number, msg: any): Promise<any> {
     try {
       const result = await query(
         `INSERT INTO mails (
           account_id, message_id, subject, from_address, to_address, 
-          date, body_preview, raw_headers, tenant_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          date, body_preview, raw_headers, tenant_id, in_reply_to, mail_references
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (message_id) DO NOTHING
-        RETURNING id`,
+        RETURNING *`,
         [
           accountId,
           msg.messageId,
@@ -135,20 +145,46 @@ export class MailFetchService {
           msg.bodyPreview,
           JSON.stringify(msg.headers),
           tenantId,
+          msg.inReplyTo || null,
+          msg.references || null,
         ]
       );
 
       if (result.rows.length > 0) {
-        const mailId = result.rows[0].id;
+        const mail = result.rows[0];
         await this.autoTagService.autoTagMail(
-          mailId,
+          mail.id,
           msg.subject || '',
           msg.bodyPreview || '',
           tenantId
         );
+        try {
+          await linkInboundEmailToConversation({
+            tenantId,
+            mailId: mail.id,
+            accountId,
+            messageId: msg.messageId,
+            inReplyTo: msg.inReplyTo || null,
+            referencesHeader: msg.references || null,
+            fromAddress: msg.from,
+            subject: msg.subject || null,
+            receivedAt: msg.date ? new Date(msg.date) : new Date(),
+          });
+        } catch (linkErr) {
+          console.error('Error linking mail to conversation:', linkErr);
+        }
+        try {
+          const { applyAutomationRules } = await import('./automationEngine');
+          await applyAutomationRules(mail.id, tenantId);
+        } catch (autoErr) {
+          console.error('Automation emit error:', autoErr);
+        }
+        return mail;
       }
+      return null;
     } catch (error) {
       console.error('Error saving mail:', error);
+      return null;
     }
   }
 }

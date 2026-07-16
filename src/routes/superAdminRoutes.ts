@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { authenticate, AuthRequest, isSuperAdmin } from '../middleware/auth';
 import { query } from '../config/database';
 import bcrypt from 'bcrypt';
+import { respondInternalError } from '../utils/safeHttpError';
 
 const router = Router();
 
@@ -31,7 +32,7 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get stats error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -72,7 +73,7 @@ router.get('/tenants', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get tenants error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -88,7 +89,9 @@ router.post('/tenants', async (req: AuthRequest, res: Response) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const userResult = await query(
-      'INSERT INTO users (email, password, tenant_id, role) VALUES ($1, $2, $3, $4) RETURNING *',
+      `INSERT INTO users (email, password, tenant_id, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, email, name, role, tenant_role, tenant_id, is_active, created_at`,
       [email, hashedPassword, tenant.id, 'admin']
     );
 
@@ -104,7 +107,7 @@ router.post('/tenants', async (req: AuthRequest, res: Response) => {
     res.status(201).json({ tenant, user: userResult.rows[0] });
   } catch (error: any) {
     console.error('Create tenant error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -124,7 +127,7 @@ router.delete('/tenants/:id', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Delete tenant error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -144,7 +147,8 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
     params.push(limit, offset);
 
     const result = await query(
-      `SELECT u.*, t.name as tenant_name
+      `SELECT u.id, u.email, u.name, u.role, u.tenant_role, u.tenant_id, u.is_active,
+              u.last_login, u.created_at, u.updated_at, t.name as tenant_name
        FROM users u
        JOIN tenants t ON u.tenant_id = t.id
        WHERE ${whereClause}
@@ -166,7 +170,7 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get users error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -191,7 +195,7 @@ router.patch('/users/:id/role', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Update user role error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -234,7 +238,7 @@ router.get('/subscriptions', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get subscriptions error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -277,7 +281,7 @@ router.patch('/subscriptions/:id', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Update subscription error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -305,7 +309,7 @@ router.get('/activity-logs', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get activity logs error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 

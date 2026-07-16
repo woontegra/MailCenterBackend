@@ -46,3 +46,28 @@ export const query = async (text: string, params?: any[]) => {
   console.log('Executed query', { text, duration, rows: res.rowCount });
   return res;
 };
+
+export async function getClient() {
+  return pool.connect();
+}
+
+export async function withTransaction<T>(
+  fn: (client: { query: typeof pool.query }) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}

@@ -2,6 +2,25 @@ import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from './auth';
 import { query } from '../config/database';
 
+const SENSITIVE_KEY_PATTERN =
+  /password|passwd|secret|token|credential|api_key|apikey|authorization|encryption/i;
+
+/** Redact secret-bearing fields before persisting request bodies to error_logs. */
+function redactSensitive(value: unknown, depth = 0): unknown {
+  if (depth > 4 || value == null) return value;
+  if (Array.isArray(value)) return value.map((v) => redactSensitive(v, depth + 1));
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = SENSITIVE_KEY_PATTERN.test(key)
+        ? '[REDACTED]'
+        : redactSensitive(val, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 export const logError = async (
   error: Error,
   req: Request | AuthRequest,
@@ -24,7 +43,7 @@ export const logError = async (
         error.stack,
         req.originalUrl,
         req.method,
-        JSON.stringify(req.body),
+        JSON.stringify(redactSensitive(req.body)),
         req.ip,
         req.get('user-agent'),
         severity

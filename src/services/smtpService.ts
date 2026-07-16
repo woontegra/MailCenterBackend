@@ -1,6 +1,7 @@
 import nodemailer, { Transporter } from 'nodemailer';
-import { MailAccount, SendMailRequest, SendMailResponse } from '../types';
 import { query } from '../config/database';
+import { MailAccount, SendMailRequest, SendMailResponse } from '../types';
+import { migrateLegacyCredentials, withDecryptedCredentials } from '../utils/mailAccountUtils';
 
 export class SmtpService {
   private createTransporter(account: MailAccount, options?: any): Transporter {
@@ -47,7 +48,7 @@ export class SmtpService {
         throw new Error('Mail account not found or inactive');
       }
 
-      const account: MailAccount = accountResult.rows[0];
+      const account: MailAccount = withDecryptedCredentials(accountResult.rows[0]);
 
       if (!account.smtp_host || !account.smtp_user || !account.smtp_password) {
         return {
@@ -58,17 +59,26 @@ export class SmtpService {
 
       const transporter = this.createTransporter(account);
 
-      const mailOptions = {
-        from: `${account.name} <${account.email}>`,
+      const fromEmail = request.fromEmail || account.email;
+      const fromName = request.fromName || account.name;
+
+      const mailOptions: Record<string, unknown> = {
+        from: `${fromName} <${fromEmail}>`,
         to: request.to,
         subject: request.subject,
         text: request.text,
         html: request.html,
       };
 
+      if (request.cc) mailOptions.cc = request.cc;
+      if (request.bcc) mailOptions.bcc = request.bcc;
+      if (request.replyTo) mailOptions.replyTo = request.replyTo;
+
       const info = await transporter.sendMail(mailOptions);
 
-      await this.saveSentMail(account.id, request, info.messageId, tenantId);
+      await this.saveSentMail(account.id, request, info.messageId, tenantId, fromEmail);
+
+      await migrateLegacyCredentials(account.id, tenantId);
 
       console.log(`✓ Mail sent successfully: ${info.messageId}`);
 
@@ -77,10 +87,10 @@ export class SmtpService {
         messageId: info.messageId,
       };
     } catch (error: any) {
-      console.error('✗ Error sending mail:', error);
+      console.error('✗ Error sending mail:', error.message || 'Failed to send mail');
       return {
         success: false,
-        error: error.message || 'Failed to send mail',
+        error: 'Failed to send mail',
       };
     }
   }
@@ -89,7 +99,8 @@ export class SmtpService {
     accountId: number,
     request: SendMailRequest,
     messageId: string,
-    tenantId: number
+    tenantId: number,
+    fromEmail?: string
   ): Promise<void> {
     try {
       const bodyPreview = request.text
@@ -107,7 +118,7 @@ export class SmtpService {
           accountId,
           messageId,
           request.subject,
-          (await this.getAccountEmail(accountId)) || 'unknown',
+          fromEmail || (await this.getAccountEmail(accountId)) || 'unknown',
           request.to,
           new Date(),
           bodyPreview,
@@ -119,7 +130,7 @@ export class SmtpService {
 
       console.log(`✓ Sent mail saved to database: ${messageId}`);
     } catch (error) {
-      console.error('✗ Error saving sent mail to database:', error);
+      console.error('✗ Error saving sent mail to database');
     }
   }
 

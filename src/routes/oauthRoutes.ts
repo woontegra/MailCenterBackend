@@ -3,6 +3,7 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { OAuthService } from '../services/oauthService';
 import { query } from '../config/database';
 import jwt from 'jsonwebtoken';
+import { respondInternalError } from '../utils/safeHttpError';
 
 const router = Router();
 const oauthService = new OAuthService();
@@ -18,7 +19,7 @@ router.get('/google/auth', authenticate, async (req: AuthRequest, res: Response)
     res.json({ url: authUrl });
   } catch (error: any) {
     console.error('Google auth URL error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -81,7 +82,7 @@ router.get('/microsoft/auth', authenticate, async (req: AuthRequest, res: Respon
     res.json({ url: authUrl });
   } catch (error: any) {
     console.error('Microsoft auth URL error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -144,7 +145,7 @@ router.get('/yahoo/auth', authenticate, async (req: AuthRequest, res: Response) 
     res.json({ url: authUrl });
   } catch (error: any) {
     console.error('Yahoo auth URL error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 

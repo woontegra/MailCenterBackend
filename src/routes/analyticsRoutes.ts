@@ -6,6 +6,8 @@ const router = Router()
 
 router.get('/overview', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    const { enforceFeature } = await import('../utils/quotaGuards')
+    if (!(await enforceFeature(res, req.user!.tenantId, 'advanced_analytics'))) return
     const { days = 30 } = req.query
     
     const [dailyStats, topAccounts, tagDistribution, statusDistribution] = await Promise.all([

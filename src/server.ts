@@ -1,6 +1,8 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import cron from 'node-cron';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -11,10 +13,10 @@ import { errorHandler } from './middleware/errorLogger';
 import { MailFetchService } from './services/mailFetchService';
 import { BackupService } from './services/backupService';
 import { OAuthService } from './services/oauthService';
-import { mailFetchWorker, mailSendWorker } from './queues/mailQueue';
 import logger from './config/logger';
-
-dotenv.config();
+import { assertRedisConfigForQueue, getRedisStatusSnapshot, pingRedis } from './config/redis';
+import { getMailSendQueueCounts } from './queues/mailQueue';
+import outboundMessageRoutes from './routes/outboundMessageRoutes';
 
 const app = express();
 const httpServer = createServer(app);
@@ -26,6 +28,8 @@ if (isProduction && !process.env.FRONTEND_URL) {
     'Configuration error: FRONTEND_URL must be set in production for secure CORS.'
   );
 }
+
+assertRedisConfigForQueue();
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -46,8 +50,17 @@ app.use(cors({
 }));
 app.use('/api/auth', authLimiter);
 app.use('/api', limiter);
-app.use(express.json());
-app.use('/api/billing/webhook', express.raw({ type: 'application/json' }));
+app.use(express.json({
+  verify: (req: any, _res, buf) => {
+    const url = String(req.originalUrl || '');
+    if (
+      url.startsWith('/api/webhooks/whatsapp/meta') ||
+      url.startsWith('/api/billing/webhook')
+    ) {
+      req.rawBody = Buffer.from(buf);
+    }
+  },
+}));
 
 import authRoutes from './routes/authRoutes';
 import accountRoutes from './routes/accountRoutes';
@@ -65,6 +78,8 @@ import attachmentRoutes from './routes/attachmentRoutes';
 import draftRoutes from './routes/draftRoutes';
 import templateRoutes from './routes/templateRoutes';
 import inviteRoutes from './routes/inviteRoutes';
+import teamRoutes from './routes/teamRoutes';
+import platformAdminRoutes from './routes/platformAdminRoutes';
 import inboxGroupedRoutes from './routes/inboxGroupedRoutes';
 import threadRoutes from './routes/threadRoutes';
 import billingRoutes from './routes/billingRoutes';
@@ -76,12 +91,27 @@ import exportRoutes from './routes/exportRoutes';
 import whiteLabelRoutes from './routes/whiteLabelRoutes';
 import superAdminRoutes from './routes/superAdminRoutes';
 import profileRoutes from './routes/profileRoutes';
+import brandRoutes from './routes/brandRoutes';
+import contactRoutes from './routes/contactRoutes';
+import sendSmsRoutes from './routes/sendSmsRoutes';
+import smsRoutes from './routes/smsRoutes';
+import sendWhatsAppRoutes from './routes/sendWhatsAppRoutes';
+import whatsappRoutes from './routes/whatsappRoutes';
+import whatsappInboxRoutes from './routes/whatsappInboxRoutes';
+import whatsappWebhookRoutes from './routes/whatsappWebhookRoutes';
+import deliverabilityRoutes from './routes/deliverabilityRoutes';
+import channelConnectionRoutes from './routes/channelConnectionRoutes';
+import senderIdentityRoutes from './routes/senderIdentityRoutes';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/mails', mailRoutes);
 app.use('/api/threads', threadRoutes);
 app.use('/api/tags', tagRoutes);
+app.use('/api/brands', deliverabilityRoutes);
+app.use('/api/brands', brandRoutes);
+app.use('/api/channel-connections', channelConnectionRoutes);
+app.use('/api/sender-identities', senderIdentityRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/oauth', oauthRoutes);
@@ -93,6 +123,12 @@ app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/user', profileRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/send-mail', sendMailRoutes);
+app.use('/api/send-sms', sendSmsRoutes);
+app.use('/api/sms', smsRoutes);
+app.use('/api/send-whatsapp', sendWhatsAppRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/inbox/whatsapp', whatsappInboxRoutes);
+app.use('/api/webhooks/whatsapp/meta', whatsappWebhookRoutes);
 app.use('/api/auto-tag', autoTagRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/notifications', notificationRoutes);
@@ -102,11 +138,69 @@ app.use('/api/automation', automationRoutes);
 app.use('/api/attachments', attachmentRoutes);
 app.use('/api/drafts', draftRoutes);
 app.use('/api/templates', templateRoutes);
+app.use('/api/outbound-messages', outboundMessageRoutes);
+app.use('/api/contacts', contactRoutes);
+app.use('/api/team', teamRoutes);
+app.use('/api/platform-admin', platformAdminRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/inbox', inboxGroupedRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/api/health', async (req, res) => {
+  let database: 'ok' | 'error' = 'error';
+  try {
+    await pool.query('SELECT 1');
+    database = 'ok';
+  } catch {
+    database = 'error';
+  }
+
+  const redisPing = await pingRedis();
+  const redisSnapshot = getRedisStatusSnapshot();
+
+  let queue: Record<string, unknown> = {
+    enabled: redisSnapshot.queueEnabled,
+    status: 'unknown',
+  };
+
+  if (redisSnapshot.queueEnabled) {
+    if (!redisPing.ok) {
+      queue = { enabled: true, status: 'unavailable', error: redisPing.error };
+    } else {
+      try {
+        const counts = await getMailSendQueueCounts();
+        queue = { enabled: true, status: 'ok', counts };
+      } catch (error: any) {
+        queue = {
+          enabled: true,
+          status: 'error',
+          error: error?.message ? String(error.message).slice(0, 120) : 'queue_error',
+        };
+      }
+    }
+  } else {
+    queue = {
+      enabled: false,
+      status: 'disabled',
+      syncFallbackAllowed: redisSnapshot.syncFallbackAllowed,
+    };
+  }
+
+  const overall =
+    database === 'ok' &&
+    (!redisSnapshot.queueEnabled || redisPing.ok)
+      ? 'ok'
+      : 'degraded';
+
+  res.status(overall === 'ok' ? 200 : 503).json({
+    status: overall,
+    timestamp: new Date().toISOString(),
+    checks: {
+      api: 'ok',
+      database,
+      redis: redisPing.ok ? 'ok' : 'error',
+      queue,
+    },
+  });
 });
 
 app.use(errorHandler);
@@ -119,7 +213,7 @@ const startServer = async () => {
     initializeSocket(httpServer);
     console.log('✓ Socket.io initialized');
 
-    console.log('✓ Queue workers started');
+    console.log('✓ Queue producers ready (workers run in separate process)');
     logger.info('Server initialized successfully');
 
     httpServer.listen(PORT, () => {

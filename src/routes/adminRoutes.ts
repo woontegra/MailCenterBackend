@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { query } from '../config/database';
+import { respondInternalError } from '../utils/safeHttpError';
 
 const router = Router();
 
@@ -50,7 +51,7 @@ router.get('/tenants', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get tenants error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -90,7 +91,7 @@ router.get('/tenants/:id', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get tenant details error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -104,7 +105,7 @@ router.put('/tenants/:id/status', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Update tenant status error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -114,7 +115,8 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
     const offset = (Number(page) - 1) * Number(limit);
 
     const result = await query(
-      `SELECT u.*, t.name as tenant_name
+      `SELECT u.id, u.email, u.name, u.role, u.tenant_role, u.tenant_id, u.is_active,
+              u.last_login, u.created_at, u.updated_at, t.name as tenant_name
        FROM users u
        JOIN tenants t ON u.tenant_id = t.id
        WHERE u.email ILIKE $1 OR u.name ILIKE $1
@@ -136,7 +138,7 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get users error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -187,7 +189,7 @@ router.get('/logs/errors', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get error logs error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -198,7 +200,7 @@ router.put('/logs/errors/:id/resolve', async (req: AuthRequest, res: Response) =
     res.json({ success: true });
   } catch (error: any) {
     console.error('Resolve error log error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -217,7 +219,7 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get stats error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 

@@ -26,6 +26,17 @@ const migrations = [
   'enterprise_upgrade.sql',
   'super_admin_upgrade.sql',
   'user_profile_upgrade.sql',
+  'channel_platform_upgrade.sql',
+  'mail_account_brand_link_upgrade.sql',
+  'compose_drafts_upgrade.sql',
+  'domain_deliverability_upgrade.sql',
+  'outbound_messages_upgrade.sql',
+  'contacts_upgrade.sql',
+  'whatsapp_upgrade.sql',
+  'unified_inbox_upgrade.sql',
+  'team_permissions_upgrade.sql',
+  'saas_platform_upgrade.sql',
+  'automation_center_upgrade.sql',
 ];
 
 async function runMigrations() {

@@ -4,6 +4,7 @@ import { query } from '../config/database';
 import { hashPassword, comparePassword } from '../utils/auth';
 import { S3Service } from '../services/s3Service';
 import crypto from 'crypto';
+import { respondInternalError } from '../utils/safeHttpError';
 
 const router = Router();
 const s3Service = new S3Service();
@@ -28,7 +29,7 @@ router.get('/profile', async (req: AuthRequest, res: Response) => {
     res.json(result.rows[0]);
   } catch (error: any) {
     console.error('Get profile error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -46,7 +47,7 @@ router.put('/profile', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Update profile error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -72,7 +73,7 @@ router.post('/avatar', async (req: AuthRequest, res: Response) => {
     res.json({ success: true, avatar_url: avatarUrl });
   } catch (error: any) {
     console.error('Upload avatar error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -113,7 +114,7 @@ router.put('/password', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Change password error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -130,7 +131,7 @@ router.get('/sessions', async (req: AuthRequest, res: Response) => {
     res.json(result.rows);
   } catch (error: any) {
     console.error('Get sessions error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -146,7 +147,7 @@ router.delete('/sessions/:id', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Delete session error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 
@@ -166,7 +167,7 @@ router.get('/login-history', async (req: AuthRequest, res: Response) => {
     res.json(result.rows);
   } catch (error: any) {
     console.error('Get login history error:', error);
-    res.status(500).json({ error: error.message });
+    respondInternalError(res, error);
   }
 });
 

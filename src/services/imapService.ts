@@ -9,7 +9,7 @@ export class ImapService {
       this.client = new ImapFlow({
         host: account.imap_host,
         port: account.imap_port,
-        secure: true,
+        secure: account.imap_secure !== false,
         auth: {
           user: account.imap_user,
           pass: account.imap_password,
@@ -19,8 +19,8 @@ export class ImapService {
 
       await this.client.connect();
       console.log(`✓ Connected to ${account.email}`);
-    } catch (error) {
-      console.error(`✗ Failed to connect to ${account.email}:`, error);
+    } catch (error: any) {
+      console.error(`✗ Failed to connect to ${account.email}:`, error.message || error);
       throw error;
     }
   }
@@ -49,12 +49,33 @@ export class ImapService {
           envelope: true,
           bodyStructure: true,
           source: false,
+          headers: ['references', 'in-reply-to', 'message-id'],
         })) {
           const envelope = msg.envelope;
           
           if (!envelope) continue;
           
           const bodyPreview = await this.getBodyPreview(msg.uid);
+          const headerMap = msg.headers;
+          let referencesHeader: string | null = null;
+          let inReplyTo: string | null = envelope.inReplyTo || null;
+
+          try {
+            if (headerMap && typeof (headerMap as any).get === 'function') {
+              const refs = (headerMap as any).get('references');
+              if (refs) {
+                referencesHeader = Array.isArray(refs)
+                  ? refs.join(' ')
+                  : String(refs);
+              }
+              const irt = (headerMap as any).get('in-reply-to');
+              if (irt && !inReplyTo) {
+                inReplyTo = Array.isArray(irt) ? String(irt[0]) : String(irt);
+              }
+            }
+          } catch {
+            /* ignore header parse */
+          }
 
           messages.push({
             messageId: envelope.messageId || `${msg.uid}-${Date.now()}`,
@@ -64,6 +85,8 @@ export class ImapService {
             date: envelope.date || new Date(),
             bodyPreview: bodyPreview,
             headers: envelope,
+            inReplyTo: inReplyTo || null,
+            references: referencesHeader,
           });
         }
       } finally {
