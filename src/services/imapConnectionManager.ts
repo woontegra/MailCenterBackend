@@ -307,21 +307,35 @@ class AccountIdleListener {
     listenerActive: boolean
   ): Promise<void> {
     this.state = status;
+    // Do not reuse the status placeholder inside CASE branches that return
+    // timestamp/varchar — PostgreSQL then fails with:
+    // "inconsistent types deduced for parameter $1"
+    const isIdle = status === 'IDLE';
+    const isError = status === 'ERROR';
     try {
       await query(
         `UPDATE mail_accounts
          SET imap_idle_status = $1,
              imap_idle_error = $2,
              imap_listener_active = $3,
-             imap_connected_at = CASE WHEN $1 = 'IDLE' THEN CURRENT_TIMESTAMP ELSE imap_connected_at END,
+             imap_connected_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE imap_connected_at END,
              imap_connection_status = CASE
-               WHEN $1 = 'IDLE' THEN 'ok'
-               WHEN $1 = 'ERROR' THEN 'error'
+               WHEN $5 THEN 'ok'
+               WHEN $6 THEN 'error'
                ELSE imap_connection_status
              END,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $4 AND tenant_id = $5`,
-        [status, error, listenerActive, this.accountSnapshot.id, this.accountSnapshot.tenant_id]
+         WHERE id = $7 AND tenant_id = $8`,
+        [
+          status,
+          error,
+          listenerActive,
+          isIdle,
+          isIdle,
+          isError,
+          this.accountSnapshot.id,
+          this.accountSnapshot.tenant_id,
+        ]
       );
     } catch (err: any) {
       console.error('Failed to update IMAP idle status:', err?.message || err);
