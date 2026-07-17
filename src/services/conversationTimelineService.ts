@@ -1,5 +1,14 @@
 import { query } from '../config/database';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
+import { sanitizeEmailHtmlFragment } from '../utils/emailHtmlSanitizer';
+
+export type TimelineAttachment = {
+  filename?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  contentId?: string;
+  inline?: boolean;
+};
 
 export type TimelineItem = {
   sourceId: string;
@@ -7,14 +16,18 @@ export type TimelineItem = {
   channelType: string;
   sender: string | null;
   recipient: string | null;
+  cc: string | null;
   subject: string | null;
   content: string | null;
   contentType: string;
+  htmlBody: string | null;
+  textBody: string | null;
+  sanitizedHtml: string | null;
   status: string | null;
   providerMessageId: string | null;
   sentAt: string | null;
   receivedAt: string | null;
-  attachments: Array<{ filename?: string; contentType?: string; sizeBytes?: number }>;
+  attachments: TimelineAttachment[];
   isRead: boolean;
   safeErrorMessage: string | null;
 };
@@ -26,6 +39,52 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+function parseAttachmentMeta(raw: unknown): TimelineAttachment[] {
+  if (!raw) return [];
+  let rows: any[] = [];
+  if (Array.isArray(raw)) rows = raw;
+  else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) rows = parsed;
+    } catch {
+      return [];
+    }
+  }
+  return rows
+    .filter((a) => a && !a.inline)
+    .map((a) => ({
+      filename: a.filename || undefined,
+      contentType: a.contentType || a.content_type || undefined,
+      sizeBytes: a.sizeBytes || a.size_bytes || undefined,
+      contentId: a.contentId || a.content_id || undefined,
+      inline: Boolean(a.inline),
+    }));
+}
+
+function buildEmailBodies(params: {
+  htmlBody?: string | null;
+  textBody?: string | null;
+  preview?: string | null;
+}): Pick<TimelineItem, 'content' | 'contentType' | 'htmlBody' | 'textBody' | 'sanitizedHtml'> {
+  const htmlRaw = params.htmlBody && String(params.htmlBody).trim() ? String(params.htmlBody) : null;
+  const textRaw = params.textBody && String(params.textBody).trim() ? String(params.textBody) : null;
+  const preview = params.preview && String(params.preview).trim() ? String(params.preview) : null;
+
+  const sanitizedHtml = htmlRaw ? sanitizeEmailHtmlFragment(htmlRaw) : null;
+  const textBody = textRaw || (sanitizedHtml ? stripHtml(sanitizedHtml) : null) || preview;
+  const content = textBody || preview;
+  const contentType = sanitizedHtml ? 'text/html' : 'text/plain';
+
+  return {
+    content,
+    contentType,
+    htmlBody: htmlRaw,
+    textBody,
+    sanitizedHtml,
+  };
+}
+
 export async function getConversationTimeline(params: {
   conversationId: number;
   tenantId: number;
@@ -35,7 +94,8 @@ export async function getConversationTimeline(params: {
 
   if (params.channelType === 'EMAIL') {
     const mails = await query(
-      `SELECT m.id, m.subject, m.from_address, m.to_address, m.body_preview,
+      `SELECT m.id, m.subject, m.from_address, m.to_address, m.cc_address,
+              m.body_preview, m.html_body, m.text_body, m.attachment_meta,
               m.date, m.is_read, m.is_sent, m.message_id, m.status
        FROM mails m
        WHERE m.conversation_id = $1 AND m.tenant_id = $2
@@ -45,20 +105,25 @@ export async function getConversationTimeline(params: {
 
     for (const m of mails.rows) {
       const outbound = Boolean(m.is_sent);
+      const bodies = buildEmailBodies({
+        htmlBody: m.html_body,
+        textBody: m.text_body,
+        preview: m.body_preview,
+      });
       items.push({
         sourceId: `mail:${m.id}`,
         direction: outbound ? 'OUTBOUND' : 'INBOUND',
         channelType: 'EMAIL',
         sender: m.from_address || null,
         recipient: m.to_address || null,
+        cc: m.cc_address || null,
         subject: m.subject || null,
-        content: m.body_preview || null,
-        contentType: 'text/plain',
+        ...bodies,
         status: outbound ? 'SENT' : m.is_read ? 'READ' : 'RECEIVED',
         providerMessageId: m.message_id || null,
         sentAt: outbound ? m.date : null,
         receivedAt: outbound ? null : m.date,
-        attachments: [],
+        attachments: parseAttachmentMeta(m.attachment_meta),
         isRead: Boolean(m.is_read) || outbound,
         safeErrorMessage: null,
       });
@@ -83,9 +148,13 @@ export async function getConversationTimeline(params: {
         channelType: 'WHATSAPP',
         sender: row.sender_value || null,
         recipient: row.recipient_value || null,
+        cc: null,
         subject: null,
         content: isMedia ? 'Medya mesajı' : row.content || null,
         contentType: isMedia ? 'media' : 'text/plain',
+        htmlBody: null,
+        textBody: isMedia ? null : row.content || null,
+        sanitizedHtml: null,
         status: row.status || 'RECEIVED',
         providerMessageId: row.provider_message_id || null,
         sentAt: null,
@@ -120,20 +189,38 @@ export async function getConversationTimeline(params: {
   for (const row of outbound.rows) {
     const recipients = row.recipient_data || {};
     const to = recipients.to || recipients.phone || null;
-    let content =
-      row.message_content || row.plain_text_content || stripHtml(row.html_content || '') || null;
-    if (row.channel_type === 'EMAIL' && !content && row.subject) {
-      content = row.subject;
+    const isEmail = row.channel_type === 'EMAIL';
+    const bodies = isEmail
+      ? buildEmailBodies({
+          htmlBody: row.html_content,
+          textBody: row.plain_text_content || row.message_content,
+          preview: row.message_content,
+        })
+      : {
+          content:
+            row.message_content ||
+            row.plain_text_content ||
+            stripHtml(row.html_content || '') ||
+            null,
+          contentType: 'text/plain' as const,
+          htmlBody: null,
+          textBody: row.message_content || row.plain_text_content || null,
+          sanitizedHtml: null,
+        };
+
+    if (isEmail && !bodies.content && row.subject) {
+      bodies.content = row.subject;
     }
+
     items.push({
       sourceId: `outbound:${row.id}`,
       direction: 'OUTBOUND',
       channelType: row.channel_type,
       sender: null,
       recipient: to,
+      cc: recipients.cc || null,
       subject: row.subject || null,
-      content,
-      contentType: row.html_content ? 'text/html' : 'text/plain',
+      ...bodies,
       status: row.status || null,
       providerMessageId: row.provider_message_id || null,
       sentAt: row.sent_at || row.queued_at || row.created_at,
@@ -159,6 +246,6 @@ export async function getConversationTimeline(params: {
 export function previewFromTimeline(items: TimelineItem[]): string | null {
   if (!items.length) return null;
   const last = items[items.length - 1];
-  const text = String(last.content || last.subject || '').trim();
+  const text = String(last.textBody || last.content || last.subject || '').trim();
   return text ? text.slice(0, 180) : null;
 }

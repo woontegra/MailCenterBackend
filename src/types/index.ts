@@ -59,8 +59,12 @@ export interface Mail {
   subject: string;
   from_address: string;
   to_address: string;
+  cc_address?: string | null;
   date: Date;
   body_preview: string;
+  html_body?: string | null;
+  text_body?: string | null;
+  attachment_meta?: any;
   is_read: boolean;
   is_starred: boolean;
   is_deleted: boolean;
@@ -84,8 +88,19 @@ export interface FetchedMessage {
   subject: string;
   from: string;
   to: string;
+  cc?: string | null;
   date: Date;
   bodyPreview: string;
+  htmlBody?: string | null;
+  textBody?: string | null;
+  attachmentMeta?: Array<{
+    filename?: string;
+    contentType?: string;
+    sizeBytes?: number;
+    contentId?: string;
+    disposition?: string;
+    inline?: boolean;
+  }>;
   headers: any;
   uid?: number;
   envelope?: any;

@@ -1,6 +1,9 @@
 import { ImapFlow } from 'imapflow';
 import { getImapIdleTimingMs } from '../config/imapIdleConfig';
 import { MailAccount, FetchedMessage } from '../types';
+import { emptyParsedBodies, parseMimeMessageBuffer } from '../utils/mimeBodyParser';
+
+const MAX_MESSAGE_DOWNLOAD_BYTES = 8 * 1024 * 1024;
 
 export interface MailboxMeta {
   uidValidity: number;
@@ -48,14 +51,21 @@ export function mapImapMessage(msg: any, accountId: number): FetchedMessage | nu
     /* ignore header parse */
   }
 
+  const cc =
+    envelope.cc?.map((t: any) => t.address).filter(Boolean).join(', ') || null;
+
   return {
     uid: msg.uid,
     messageId: normalizeMessageId(headerMessageId, accountId, msg.uid),
     subject: envelope.subject || '(No Subject)',
     from: envelope.from?.[0]?.address || 'unknown',
     to: envelope.to?.map((t: any) => t.address).filter(Boolean).join(', ') || '',
+    cc,
     date: envelope.date || new Date(),
     bodyPreview: '',
+    htmlBody: null,
+    textBody: null,
+    attachmentMeta: [],
     headers: envelope,
     envelope,
     inReplyTo: inReplyTo || null,
@@ -148,21 +158,53 @@ export async function readMailboxMeta(client: ImapFlow): Promise<MailboxMeta> {
   };
 }
 
-export async function downloadBodyPreview(client: ImapFlow, uid: number): Promise<string> {
+/**
+ * Download full RFC822 (capped) and parse MIME so text/html is preserved.
+ * Falls back to a short plain preview if download/parse fails.
+ */
+export async function downloadAndParseMessageBodies(
+  client: ImapFlow,
+  uid: number
+): Promise<{
+  bodyPreview: string;
+  htmlBody: string | null;
+  textBody: string | null;
+  ccAddress: string | null;
+  attachments: NonNullable<FetchedMessage['attachmentMeta']>;
+}> {
   try {
-    const { content } = await client.download(String(uid), '1', { maxBytes: 500, uid: true });
-    let text = '';
+    const { content } = await client.download(String(uid), undefined, {
+      uid: true,
+      maxBytes: MAX_MESSAGE_DOWNLOAD_BYTES,
+    });
+    const chunks: Buffer[] = [];
+    let total = 0;
     for await (const chunk of content) {
-      text += chunk.toString();
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > MAX_MESSAGE_DOWNLOAD_BYTES) break;
+      chunks.push(buf);
     }
-    return text
-      .replace(/<[^>]*>/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .substring(0, 200);
+    const raw = Buffer.concat(chunks);
+    if (!raw.length) return { ...emptyParsedBodies(), attachments: [] };
+
+    const parsed = await parseMimeMessageBuffer(raw);
+    return {
+      bodyPreview: parsed.bodyPreview,
+      htmlBody: parsed.htmlBody,
+      textBody: parsed.textBody,
+      ccAddress: parsed.ccAddress,
+      attachments: parsed.attachments,
+    };
   } catch {
-    return '';
+    return { ...emptyParsedBodies(), attachments: [] };
   }
+}
+
+/** @deprecated Prefer downloadAndParseMessageBodies — kept for callers that only need preview text. */
+export async function downloadBodyPreview(client: ImapFlow, uid: number): Promise<string> {
+  const parsed = await downloadAndParseMessageBodies(client, uid);
+  return parsed.bodyPreview;
 }
 
 export async function fetchMessagesByUidRange(
@@ -212,11 +254,16 @@ export async function fetchMessagesByUidRange(
 
   // IMPORTANT: ImapFlow fetch iterators must not run nested IMAP commands inside
   // the `for await (... of client.fetch())` loop; doing so deadlocks the FETCH
-  // command and startup reconciliation never completes. Download previews only
+  // command and startup reconciliation never completes. Download bodies only
   // after the FETCH iterator has fully finished.
   for (const message of messages) {
     if (!message.uid) continue;
-    message.bodyPreview = await downloadBodyPreview(client, message.uid);
+    const bodies = await downloadAndParseMessageBodies(client, message.uid);
+    message.bodyPreview = bodies.bodyPreview;
+    message.htmlBody = bodies.htmlBody;
+    message.textBody = bodies.textBody;
+    message.attachmentMeta = bodies.attachments;
+    if (bodies.ccAddress && !message.cc) message.cc = bodies.ccAddress;
   }
 
   return { messages, meta, highestUid };

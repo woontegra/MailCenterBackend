@@ -223,9 +223,10 @@ export class MailFetchService {
 
       const result = await query(
         `INSERT INTO mails (
-          account_id, message_id, subject, from_address, to_address,
-          date, body_preview, raw_headers, tenant_id, in_reply_to, mail_references, imap_uid
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          account_id, message_id, subject, from_address, to_address, cc_address,
+          date, body_preview, html_body, text_body, attachment_meta,
+          raw_headers, tenant_id, in_reply_to, mail_references, imap_uid
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16)
         ON CONFLICT (message_id) DO NOTHING
         RETURNING *`,
         [
@@ -234,8 +235,12 @@ export class MailFetchService {
           msg.subject,
           msg.from,
           msg.to,
+          msg.cc || null,
           msg.date,
           msg.bodyPreview,
+          msg.htmlBody || null,
+          msg.textBody || null,
+          JSON.stringify(msg.attachmentMeta || []),
           JSON.stringify(msg.headers),
           tenantId,
           msg.inReplyTo || null,
@@ -253,7 +258,7 @@ export class MailFetchService {
       await this.autoTagService.autoTagMail(
         mail.id,
         msg.subject || '',
-        msg.bodyPreview || '',
+        msg.textBody || msg.bodyPreview || '',
         tenantId
       );
 

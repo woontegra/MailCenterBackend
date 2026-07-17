@@ -42,6 +42,7 @@ const migrations = [
   'email_campaigns_upgrade.sql',
   'campaign_recipient_management_upgrade.sql',
   'template_media_assets_upgrade.sql',
+  'mail_html_body_upgrade.sql',
 ];
 
 async function runMigrations() {

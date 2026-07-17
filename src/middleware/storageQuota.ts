@@ -46,14 +46,22 @@ export const updateStorageUsage = async (tenantId: number, sizeMB: number) => {
 
 export const calculateMailSize = (mail: any): number => {
   let size = 0;
-  
+
   if (mail.body_preview) {
     size += Buffer.byteLength(mail.body_preview, 'utf8');
   }
-  
+  if (mail.html_body) {
+    size += Buffer.byteLength(mail.html_body, 'utf8');
+  }
+  if (mail.text_body) {
+    size += Buffer.byteLength(mail.text_body, 'utf8');
+  }
+  if (mail.attachment_meta) {
+    size += Buffer.byteLength(JSON.stringify(mail.attachment_meta), 'utf8');
+  }
   if (mail.raw_headers) {
     size += Buffer.byteLength(JSON.stringify(mail.raw_headers), 'utf8');
   }
-  
+
   return size;
 };
