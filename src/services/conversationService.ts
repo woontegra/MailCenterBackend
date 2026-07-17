@@ -39,12 +39,27 @@ export function parseReferencesHeader(value: string | null | undefined): string[
   return matches.map((m) => normalizeMessageId(m)!).filter(Boolean);
 }
 
+/**
+ * Safe contact label for conversation rows.
+ * contacts has first_name/last_name/company_name — not display_name.
+ * Aliases as contact_display_name for the existing API contract.
+ */
+export const CONTACT_DISPLAY_NAME_SQL = `COALESCE(
+  NULLIF(BTRIM(CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(ct.first_name), ''),
+    NULLIF(BTRIM(ct.last_name), '')
+  )), ''),
+  NULLIF(BTRIM(ct.company_name), ''),
+  NULLIF(BTRIM(c.participant_value), '')
+)`;
+
 export async function getOwnedConversation(id: number, tenantId: number) {
   const result = await query(
     `SELECT c.*,
             b.name AS brand_name,
             b.accent_color AS brand_accent_color,
-            ct.display_name AS contact_display_name,
+            ${CONTACT_DISPLAY_NAME_SQL} AS contact_display_name,
             u.name AS assigned_user_name,
             u.email AS assigned_user_email
      FROM conversations c
