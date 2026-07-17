@@ -14,10 +14,14 @@ export const mailFetchWorker = new Worker(
   'mail-fetch',
   async (job: Job) => {
     const { accountId, tenantId } = job.data;
-    logInfo('Processing mail fetch job', { accountId, tenantId });
+    logInfo('Processing mail fetch / reconcile job', { accountId, tenantId });
     try {
-      await mailFetchService.fetchAllAccounts();
-      logInfo('Mail fetch completed', { accountId, tenantId });
+      if (accountId) {
+        await mailFetchService.fetchAccountById(Number(accountId), tenantId ? Number(tenantId) : undefined);
+      } else {
+        await mailFetchService.fetchAllAccounts();
+      }
+      logInfo('Mail fetch / reconcile completed', { accountId, tenantId });
     } catch (error: any) {
       logError(error, { accountId, tenantId });
       throw error;

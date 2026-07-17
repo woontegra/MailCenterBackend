@@ -37,6 +37,7 @@ const migrations = [
   'team_permissions_upgrade.sql',
   'saas_platform_upgrade.sql',
   'automation_center_upgrade.sql',
+  'imap_idle_upgrade.sql',
 ];
 
 async function runMigrations() {

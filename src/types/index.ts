@@ -42,6 +42,12 @@ export interface MailAccount {
   last_sync_at?: Date;
   sync_status?: string;
   sync_error?: string;
+  imap_uidvalidity?: number | null;
+  last_inbound_at?: Date | null;
+  imap_idle_status?: string | null;
+  imap_idle_error?: string | null;
+  imap_connected_at?: Date | null;
+  imap_listener_active?: boolean;
   created_at: Date;
   updated_at: Date;
 }

@@ -18,6 +18,7 @@ import { testMailConnection } from '../services/mailConnectionTestService';
 import { notFound, badRequest } from '../utils/channelPlatform';
 import { isBrandDomainDeliverabilityValid } from '../utils/brandDeliverability';
 import { extractEmailDomain, normalizeDomainInput } from '../utils/domainValidation';
+import { publishMailAccountEvent } from '../services/redisEventBus';
 
 const router = Router();
 
@@ -390,6 +391,13 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     await afterCountResourceCreated(tenantId);
 
     const detail = await fetchAccountDetail(account, tenantId);
+    if (detail?.is_active !== false) {
+      await publishMailAccountEvent({
+        type: 'ACCOUNT_CREATED',
+        tenantId,
+        accountId: account,
+      });
+    }
     res.status(201).json(sanitizeMailAccount(detail));
   } catch (error: any) {
     if (error.message?.includes('MAIL_CREDENTIALS_ENCRYPTION_KEY')) {
@@ -644,6 +652,19 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     await migrateLegacyCredentials(Number(id), tenantId);
 
     const detail = await fetchAccountDetail(Number(id), tenantId);
+    if (!detail?.is_active) {
+      await publishMailAccountEvent({
+        type: 'ACCOUNT_DISABLED',
+        tenantId,
+        accountId: Number(id),
+      });
+    } else {
+      await publishMailAccountEvent({
+        type: 'ACCOUNT_UPDATED',
+        tenantId,
+        accountId: Number(id),
+      });
+    }
     res.json(sanitizeMailAccount(detail));
   } catch (error: any) {
     if (error.code === 'BRAND_NOT_FOUND') return notFound(res);
@@ -683,6 +704,11 @@ router.patch('/:id/toggle', async (req: AuthRequest, res: Response) => {
     await migrateLegacyCredentials(Number(id), tenantId);
 
     const detail = await fetchAccountDetail(Number(id), tenantId);
+    await publishMailAccountEvent({
+      type: result.rows[0].is_active ? 'ACCOUNT_UPDATED' : 'ACCOUNT_DISABLED',
+      tenantId,
+      accountId: Number(id),
+    });
     res.json(sanitizeMailAccount(detail));
   } catch (error) {
     console.error('Error toggling account:', error);
@@ -723,6 +749,12 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
         id,
         tenantId,
       ]);
+    });
+
+    await publishMailAccountEvent({
+      type: 'ACCOUNT_DELETED',
+      tenantId,
+      accountId: Number(id),
     });
 
     res.json({ message: 'Hesap silindi' });

@@ -1,133 +1,233 @@
 import { ImapFlow } from 'imapflow';
 import { MailAccount, FetchedMessage } from '../types';
 
+export interface MailboxMeta {
+  uidValidity: number;
+  uidNext: number;
+  exists: number;
+}
+
+export interface UidFetchResult {
+  messages: FetchedMessage[];
+  meta: MailboxMeta;
+  highestUid: number;
+}
+
+function normalizeMessageId(raw: string | undefined, accountId: number, uid: number): string {
+  const cleaned = (raw || '').trim();
+  if (cleaned) return cleaned;
+  return `<imap-${accountId}-${uid}@mailcenter.local>`;
+}
+
+export function mapImapMessage(msg: any, accountId: number): FetchedMessage | null {
+  const envelope = msg.envelope;
+  if (!envelope || !msg.uid) return null;
+
+  const headerMap = msg.headers;
+  let referencesHeader: string | null = null;
+  let inReplyTo: string | null = envelope.inReplyTo || null;
+  let headerMessageId: string | undefined = envelope.messageId;
+
+  try {
+    if (headerMap && typeof headerMap.get === 'function') {
+      const refs = headerMap.get('references');
+      if (refs) {
+        referencesHeader = Array.isArray(refs) ? refs.join(' ') : String(refs);
+      }
+      const irt = headerMap.get('in-reply-to');
+      if (irt && !inReplyTo) {
+        inReplyTo = Array.isArray(irt) ? String(irt[0]) : String(irt);
+      }
+      const mid = headerMap.get('message-id');
+      if (mid && !headerMessageId) {
+        headerMessageId = Array.isArray(mid) ? String(mid[0]) : String(mid);
+      }
+    }
+  } catch {
+    /* ignore header parse */
+  }
+
+  return {
+    uid: msg.uid,
+    messageId: normalizeMessageId(headerMessageId, accountId, msg.uid),
+    subject: envelope.subject || '(No Subject)',
+    from: envelope.from?.[0]?.address || 'unknown',
+    to: envelope.to?.map((t: any) => t.address).filter(Boolean).join(', ') || '',
+    date: envelope.date || new Date(),
+    bodyPreview: '',
+    headers: envelope,
+    envelope,
+    inReplyTo: inReplyTo || null,
+    references: referencesHeader,
+  };
+}
+
+export function isImapAuthError(error: unknown): boolean {
+  const err = error as { authenticationFailed?: boolean; responseText?: string; message?: string; code?: string };
+  if (err?.authenticationFailed) return true;
+  const text = `${err?.responseText || ''} ${err?.message || ''} ${err?.code || ''}`.toLowerCase();
+  return /auth|invalid credentials|login failed|authentication failed|invalid user|password/.test(text);
+}
+
+export function safeImapErrorMessage(error: unknown): string {
+  const err = error as { message?: string; responseText?: string; code?: string };
+  if (isImapAuthError(error)) {
+    return 'IMAP kimlik doğrulama başarısız. Hesap bilgilerini kontrol edin.';
+  }
+  const raw = String(err?.responseText || err?.message || err?.code || 'IMAP bağlantı hatası');
+  return raw
+    .replace(/pass(word)?[=:].*/gi, '[redacted]')
+    .replace(/auth[=:].*/gi, '[redacted]')
+    .slice(0, 300);
+}
+
+export function createImapClient(account: MailAccount): ImapFlow {
+  return new ImapFlow({
+    host: account.imap_host,
+    port: account.imap_port,
+    secure: account.imap_secure !== false,
+    auth: {
+      user: account.imap_user,
+      pass: account.imap_password,
+    },
+    logger: false,
+  });
+}
+
+export async function readMailboxMeta(client: ImapFlow): Promise<MailboxMeta> {
+  const status = await client.status('INBOX', {
+    messages: true,
+    uidNext: true,
+    uidValidity: true,
+  });
+  return {
+    uidValidity: Number(status.uidValidity || 0),
+    uidNext: Number(status.uidNext || 1),
+    exists: Number(status.messages || 0),
+  };
+}
+
+export async function downloadBodyPreview(client: ImapFlow, uid: number): Promise<string> {
+  try {
+    const { content } = await client.download(String(uid), '1', { maxBytes: 500, uid: true });
+    let text = '';
+    for await (const chunk of content) {
+      text += chunk.toString();
+    }
+    return text
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 200);
+  } catch {
+    return '';
+  }
+}
+
+export async function fetchMessagesByUidRange(
+  client: ImapFlow,
+  accountId: number,
+  sinceUid: number
+): Promise<UidFetchResult> {
+  const meta = await readMailboxMeta(client);
+  const messages: FetchedMessage[] = [];
+  let highestUid = sinceUid;
+
+  if (meta.exists === 0) {
+    return { messages, meta, highestUid };
+  }
+
+  const range = sinceUid > 0 ? `${sinceUid + 1}:*` : '1:*';
+  // When sinceUid is 0 on a large mailbox, cap initial catch-up to recent UIDs via uidNext window
+  const fetchRange =
+    sinceUid <= 0 && meta.uidNext > 51
+      ? `${Math.max(1, meta.uidNext - 50)}:*`
+      : range;
+
+  try {
+    for await (const msg of client.fetch(
+      fetchRange,
+      {
+        envelope: true,
+        headers: ['references', 'in-reply-to', 'message-id'],
+      },
+      { uid: true }
+    )) {
+      const mapped = mapImapMessage(msg, accountId);
+      if (!mapped || !mapped.uid) continue;
+      if (sinceUid > 0 && mapped.uid <= sinceUid) continue;
+      mapped.bodyPreview = await downloadBodyPreview(client, mapped.uid);
+      if (mapped.uid > highestUid) highestUid = mapped.uid;
+      messages.push(mapped);
+    }
+  } catch (error: any) {
+    // Empty range (no messages after UID) is normal
+    const text = String(error?.message || '');
+    if (!/nothing to fetch|no messages|empty/i.test(text)) {
+      throw error;
+    }
+  }
+
+  messages.sort((a, b) => (a.uid || 0) - (b.uid || 0));
+  return { messages, meta, highestUid };
+}
+
 export class ImapService {
   private client: ImapFlow | null = null;
 
   async connect(account: MailAccount): Promise<void> {
     try {
-      this.client = new ImapFlow({
-        host: account.imap_host,
-        port: account.imap_port,
-        secure: account.imap_secure !== false,
-        auth: {
-          user: account.imap_user,
-          pass: account.imap_password,
-        },
-        logger: false,
-      });
-
+      this.client = createImapClient(account);
       await this.client.connect();
-      console.log(`✓ Connected to ${account.email}`);
+      console.log(`✓ Connected to IMAP account #${account.id}`);
     } catch (error: any) {
-      console.error(`✗ Failed to connect to ${account.email}:`, error.message || error);
+      console.error(`✗ Failed to connect to IMAP account #${account.id}:`, safeImapErrorMessage(error));
       throw error;
     }
   }
 
+  getClient(): ImapFlow {
+    if (!this.client) throw new Error('IMAP client not connected');
+    return this.client;
+  }
+
+  async fetchUidRange(accountId: number, sinceUid: number): Promise<UidFetchResult> {
+    if (!this.client) throw new Error('IMAP client not connected');
+    const lock = await this.client.getMailboxLock('INBOX');
+    try {
+      return await fetchMessagesByUidRange(this.client, accountId, sinceUid);
+    } finally {
+      lock.release();
+    }
+  }
+
+  /** @deprecated Prefer fetchUidRange. Kept for compatibility; now returns UIDs. */
   async fetchRecentMails(limit: number = 50): Promise<FetchedMessage[]> {
-    if (!this.client) {
-      throw new Error('IMAP client not connected');
-    }
-
+    if (!this.client) throw new Error('IMAP client not connected');
+    const lock = await this.client.getMailboxLock('INBOX');
     try {
-      const lock = await this.client.getMailboxLock('INBOX');
-      const messages: FetchedMessage[] = [];
-
-      try {
-        const mailboxStatus = await this.client.status('INBOX', { messages: true });
-        const totalMessages = mailboxStatus.messages;
-        
-        if (!totalMessages || totalMessages === 0) {
-          return messages;
-        }
-
-        const startSeq = Math.max(1, totalMessages - limit + 1);
-        const endSeq = totalMessages;
-
-        for await (const msg of this.client.fetch(`${startSeq}:${endSeq}`, {
-          envelope: true,
-          bodyStructure: true,
-          source: false,
-          headers: ['references', 'in-reply-to', 'message-id'],
-        })) {
-          const envelope = msg.envelope;
-          
-          if (!envelope) continue;
-          
-          const bodyPreview = await this.getBodyPreview(msg.uid);
-          const headerMap = msg.headers;
-          let referencesHeader: string | null = null;
-          let inReplyTo: string | null = envelope.inReplyTo || null;
-
-          try {
-            if (headerMap && typeof (headerMap as any).get === 'function') {
-              const refs = (headerMap as any).get('references');
-              if (refs) {
-                referencesHeader = Array.isArray(refs)
-                  ? refs.join(' ')
-                  : String(refs);
-              }
-              const irt = (headerMap as any).get('in-reply-to');
-              if (irt && !inReplyTo) {
-                inReplyTo = Array.isArray(irt) ? String(irt[0]) : String(irt);
-              }
-            }
-          } catch {
-            /* ignore header parse */
-          }
-
-          messages.push({
-            messageId: envelope.messageId || `${msg.uid}-${Date.now()}`,
-            subject: envelope.subject || '(No Subject)',
-            from: envelope.from?.[0]?.address || 'unknown',
-            to: envelope.to?.map(t => t.address).join(', ') || '',
-            date: envelope.date || new Date(),
-            bodyPreview: bodyPreview,
-            headers: envelope,
-            inReplyTo: inReplyTo || null,
-            references: referencesHeader,
-          });
-        }
-      } finally {
-        lock.release();
-      }
-
-      return messages.reverse();
-    } catch (error) {
-      console.error('Error fetching mails:', error);
-      throw error;
-    }
-  }
-
-  private async getBodyPreview(uid: number): Promise<string> {
-    if (!this.client) return '';
-
-    try {
-      const { content } = await this.client.download(String(uid), '1', {
-        maxBytes: 500,
-      });
-
-      let text = '';
-      for await (const chunk of content) {
-        text += chunk.toString();
-      }
-
-      return text
-        .replace(/<[^>]*>/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 200);
-    } catch (error) {
-      return '';
+      const meta = await readMailboxMeta(this.client);
+      if (!meta.exists) return [];
+      const sinceUid = Math.max(0, meta.uidNext - limit - 1);
+      const result = await fetchMessagesByUidRange(this.client, 0, sinceUid);
+      return result.messages.slice(-limit).reverse();
+    } finally {
+      lock.release();
     }
   }
 
   async disconnect(): Promise<void> {
     if (this.client) {
-      await this.client.logout();
+      try {
+        await this.client.logout();
+      } catch {
+        try {
+          this.client.close();
+        } catch {
+          /* ignore */
+        }
+      }
       this.client = null;
-      console.log('✓ Disconnected from IMAP');
     }
   }
 }

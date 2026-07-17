@@ -22,6 +22,8 @@ export const PUBLIC_MAIL_ACCOUNT_FIELDS = `
   token_expires_at, last_sync_uid, last_sync_at,
   sync_status, sync_error,
   imap_connection_status, smtp_connection_status, last_connection_test_at,
+  imap_uidvalidity, last_inbound_at, imap_idle_status, imap_idle_error,
+  imap_connected_at, imap_listener_active,
   created_at, updated_at
 `.replace(/\s+/g, ' ').trim();
 
@@ -33,6 +35,8 @@ export const ACCOUNT_LIST_SELECT = `
   ma.token_expires_at, ma.last_sync_uid, ma.last_sync_at,
   ma.sync_status, ma.sync_error,
   ma.imap_connection_status, ma.smtp_connection_status, ma.last_connection_test_at,
+  ma.imap_uidvalidity, ma.last_inbound_at, ma.imap_idle_status, ma.imap_idle_error,
+  ma.imap_connected_at, ma.imap_listener_active,
   ma.created_at, ma.updated_at,
   b.id AS brand_id,
   b.name AS brand_name,

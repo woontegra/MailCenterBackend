@@ -15,8 +15,15 @@ import { BackupService } from './services/backupService';
 import { OAuthService } from './services/oauthService';
 import logger from './config/logger';
 import { assertRedisConfigForQueue, getRedisStatusSnapshot, pingRedis } from './config/redis';
+import {
+  assertImapIdleConfig,
+  getImapReconcileIntervalMinutes,
+  isImapIdleEnabled,
+} from './config/imapIdleConfig';
 import { getMailSendQueueCounts } from './queues/mailQueue';
 import outboundMessageRoutes from './routes/outboundMessageRoutes';
+import { emitToTenant } from './services/socketService';
+import { subscribeInboxRealtime } from './services/redisEventBus';
 
 const app = express();
 const httpServer = createServer(app);
@@ -207,11 +214,38 @@ app.use(errorHandler);
 
 const startServer = async () => {
   try {
+    assertImapIdleConfig();
+
     await pool.query('SELECT NOW()');
     console.log('✓ Database connected');
 
     initializeSocket(httpServer);
     console.log('✓ Socket.io initialized');
+
+    // Bridge Redis inbox events from worker → Socket.IO (web process holds sockets)
+    subscribeInboxRealtime((event) => {
+      if (event.type === 'new_mail') {
+        emitToTenant(event.tenantId, 'new_mail', {
+          id: event.mailId,
+          subject: event.subject,
+          from: event.from,
+          accountId: event.accountId,
+          conversationId: event.conversationId,
+        });
+        emitToTenant(event.tenantId, 'conversation_updated', {
+          conversationId: event.conversationId,
+          mailId: event.mailId,
+          accountId: event.accountId,
+        });
+      } else {
+        emitToTenant(event.tenantId, 'conversation_updated', {
+          conversationId: event.conversationId,
+          mailId: event.mailId,
+          accountId: event.accountId,
+        });
+      }
+    });
+    console.log('✓ Inbox realtime Redis bridge ready');
 
     console.log('✓ Queue producers ready (workers run in separate process)');
     logger.info('Server initialized successfully');
@@ -219,13 +253,23 @@ const startServer = async () => {
     httpServer.listen(PORT, () => {
       console.log(`✓ Server running on port ${PORT}`);
       console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`✓ IMAP IDLE: ${isImapIdleEnabled() ? 'enabled (worker)' : 'disabled'}`);
     });
 
-    cron.schedule(process.env.MAIL_FETCH_INTERVAL || '*/5 * * * *', async () => {
-      console.log('Running mail fetch cron...');
-      const mailFetchService = new MailFetchService();
-      await mailFetchService.fetchAllAccounts();
-    });
+    if (isImapIdleEnabled()) {
+      // Primary inbound sync is IMAP IDLE inside MailCenterWorker.
+      // Periodic reconciliation also runs inside ImapConnectionManager — no web IMAP cron.
+      console.log(
+        `✓ IMAP IDLE enabled — web mail-fetch cron disabled (reconcile every ${getImapReconcileIntervalMinutes()} min in worker)`
+      );
+    } else {
+      // Dev/fallback: polling when IDLE is off
+      cron.schedule(process.env.MAIL_FETCH_INTERVAL || '*/5 * * * *', async () => {
+        console.log('Running mail fetch cron (IDLE disabled)...');
+        const mailFetchService = new MailFetchService();
+        await mailFetchService.fetchAllAccounts();
+      });
+    }
 
     cron.schedule('0 2 * * *', async () => {
       console.log('Running daily backup...');
