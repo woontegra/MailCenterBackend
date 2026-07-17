@@ -80,14 +80,29 @@ function stringifyValue(value: unknown): string {
   return String(value);
 }
 
+export const STANDARD_VARIABLE_FALLBACKS: Record<string, string> = {
+  ad: 'Müşteri',
+  soyad: '',
+  tam_ad: 'Müşteri',
+  firma: 'Firma',
+  email: 'ornek@email.com',
+  telefon: '+90 555 000 00 00',
+  marka_adi: 'Marka',
+  abonelikten_cikma_linki: 'https://example.com/abonelikten-cik',
+};
+
 function substitute(
   template: string,
   values: Record<string, string>,
   options: { escape: boolean }
 ): string {
   return template.replace(VAR_PATTERN, (_full, name: string) => {
-    const raw = values[name] ?? '';
-    return options.escape ? escapeHtml(raw) : raw;
+    const raw = values[name];
+    const resolved =
+      raw !== undefined && String(raw).trim() !== ''
+        ? String(raw)
+        : STANDARD_VARIABLE_FALLBACKS[name] ?? '';
+    return options.escape ? escapeHtml(resolved) : resolved;
   });
 }
 

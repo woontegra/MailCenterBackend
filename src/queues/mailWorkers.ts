@@ -7,6 +7,8 @@ import { processOutboundWhatsAppMessage } from '../services/outboundWhatsAppProc
 import { enqueueOutboundSend } from './mailQueue';
 import { logError, logInfo } from '../config/logger';
 import { getOutboundMessageForTenant } from '../services/outboundMessageService';
+import { processCampaignDispatchBatch } from '../services/campaignDispatchService';
+import { promoteScheduledCampaigns } from '../services/campaignService';
 
 const mailFetchService = new MailFetchService();
 
@@ -83,6 +85,21 @@ export const mailSendWorker = new Worker(
         outcome: result.outcome,
       });
       return result;
+    }
+
+    if (job.name === 'campaign-dispatch') {
+      const campaignId = Number(job.data.campaignId);
+      const tenantId = Number(job.data.tenantId);
+      logInfo('Processing campaign dispatch batch', { campaignId, tenantId });
+      const result = await processCampaignDispatchBatch(campaignId, tenantId);
+      logInfo('Campaign dispatch batch finished', { campaignId, tenantId, ...result });
+      return result;
+    }
+
+    if (job.name === 'campaign-scheduler-tick') {
+      const promoted = await promoteScheduledCampaigns();
+      logInfo('Campaign scheduler tick', { promoted });
+      return { promoted };
     }
 
     // Legacy path: do not process request blobs that may contain secrets in logs

@@ -84,6 +84,7 @@ import automationRoutes from './routes/automationRoutes';
 import attachmentRoutes from './routes/attachmentRoutes';
 import draftRoutes from './routes/draftRoutes';
 import templateRoutes from './routes/templateRoutes';
+import templateMediaRoutes from './routes/templateMediaRoutes';
 import inviteRoutes from './routes/inviteRoutes';
 import teamRoutes from './routes/teamRoutes';
 import platformAdminRoutes from './routes/platformAdminRoutes';
@@ -109,6 +110,10 @@ import whatsappWebhookRoutes from './routes/whatsappWebhookRoutes';
 import deliverabilityRoutes from './routes/deliverabilityRoutes';
 import channelConnectionRoutes from './routes/channelConnectionRoutes';
 import senderIdentityRoutes from './routes/senderIdentityRoutes';
+import campaignRoutes from './routes/campaignRoutes';
+import segmentRoutes from './routes/segmentRoutes';
+import suppressionRoutes from './routes/suppressionRoutes';
+import unsubscribeRoutes from './routes/unsubscribeRoutes';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
@@ -145,12 +150,17 @@ app.use('/api/automation', automationRoutes);
 app.use('/api/attachments', attachmentRoutes);
 app.use('/api/drafts', draftRoutes);
 app.use('/api/templates', templateRoutes);
+app.use('/api/templates/media', templateMediaRoutes);
 app.use('/api/outbound-messages', outboundMessageRoutes);
+app.use('/api/campaigns', campaignRoutes);
+app.use('/api/segments', segmentRoutes);
+app.use('/api/suppressions', suppressionRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/platform-admin', platformAdminRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/inbox', inboxGroupedRoutes);
+app.use('/unsubscribe', unsubscribeRoutes);
 
 app.get('/api/health', async (req, res) => {
   let database: 'ok' | 'error' = 'error';

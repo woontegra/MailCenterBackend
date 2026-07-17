@@ -9,6 +9,11 @@ import {
   validateTemplateSubject,
 } from '../utils/channelPlatform';
 import { renderTemplateContent } from '../utils/templateRenderer';
+import {
+  compileEmailDocument,
+  EditorDocument,
+  hasRequiredBulkBlocks,
+} from '../utils/emailBlockCompiler';
 
 const router = Router();
 router.use(authenticate);
@@ -16,7 +21,7 @@ router.use(authenticate);
 router.get('/', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
-    const { brand_id, channel_type } = req.query;
+    const { brand_id, channel_type, q } = req.query;
     const params: unknown[] = [tenantId];
 
     let sql = `
@@ -38,13 +43,33 @@ router.get('/', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res
       params.push(channel_type);
       sql += ` AND t.channel_type = $${params.length}`;
     }
+    if (q && String(q).trim()) {
+      params.push(`%${String(q).trim()}%`);
+      sql += ` AND (t.name ILIKE $${params.length} OR t.subject ILIKE $${params.length})`;
+    }
 
-    sql += ' ORDER BY t.created_at DESC';
+    sql += ' ORDER BY t.updated_at DESC NULLS LAST, t.created_at DESC';
     const result = await query(sql, params);
     res.json({ success: true, data: result.rows });
   } catch (error) {
     console.error('Error listing templates:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch templates' });
+  }
+});
+
+router.post('/compile', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res: Response) => {
+  try {
+    const doc = req.body.editor_json ?? req.body.editorJson;
+    const subject = req.body.subject ?? '';
+    const preheader = req.body.preheader ?? '';
+    if (!doc || !doc.blocks) {
+      return badRequest(res, 'editor_json with blocks is required');
+    }
+    const compiled = compileEmailDocument(doc as EditorDocument, { subject, preheader });
+    res.json({ success: true, data: compiled });
+  } catch (error) {
+    console.error('Error compiling template:', error);
+    res.status(500).json({ success: false, error: 'Şablon derlenemedi' });
   }
 });
 
@@ -93,6 +118,50 @@ router.post('/render', requirePermission('TEMPLATE_VIEW'), async (req: AuthReque
   }
 });
 
+function parseEditorJson(raw: unknown): EditorDocument | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const doc = raw as EditorDocument;
+  if (!Array.isArray(doc.blocks)) return null;
+  return doc;
+}
+
+function buildContentFromBody(
+  body: Record<string, unknown>,
+  subject?: string | null
+): {
+  content: string
+  plainText: string | null
+  variables: string[]
+  editorJson: EditorDocument | null
+  warnings: string[]
+} {
+  const editorJson = parseEditorJson(body.editor_json ?? body.editorJson)
+  if (!editorJson) {
+    const rawVars = body.variables
+    const variables = Array.isArray(rawVars)
+      ? rawVars.map((v) => (typeof v === 'string' ? v : String((v as { name?: string })?.name || ''))).filter(Boolean)
+      : []
+    return {
+      content: String(body.content || ''),
+      plainText: body.plain_text_content ? String(body.plain_text_content) : null,
+      variables,
+      editorJson: null,
+      warnings: [],
+    }
+  }
+  const compiled = compileEmailDocument(editorJson, {
+    subject: subject || String(body.subject || ''),
+    preheader: String(body.preheader || ''),
+  })
+  return {
+    content: compiled.html,
+    plainText: compiled.plainText,
+    variables: compiled.variables,
+    editorJson,
+    warnings: compiled.warnings,
+  }
+}
+
 router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
@@ -101,7 +170,7 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
     const userId = req.user!.userId;
     const {
       name,
-      content,
+      content: bodyContent,
       is_shared = false,
       brand_id,
       channel_type,
@@ -110,14 +179,32 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
       plain_text_content,
       variables = [],
       is_active = true,
+      description,
+      preheader,
+      editor_json,
+      is_draft = true,
+      template_kind = 'INDIVIDUAL',
       provider_template_name,
       provider_template_language,
       provider_approval_status,
       provider_template_components,
     } = req.body;
 
+    const built = buildContentFromBody(req.body, subject);
+    const content = built.content || bodyContent;
     if (!name || !content) {
       return badRequest(res, 'name and content are required');
+    }
+
+    const kind = String(template_kind || 'INDIVIDUAL').toUpperCase();
+    if (!['INDIVIDUAL', 'BULK'].includes(kind)) {
+      return badRequest(res, 'Invalid template_kind');
+    }
+    if (kind === 'BULK' && built.editorJson) {
+      const reqBlocks = hasRequiredBulkBlocks(built.editorJson.blocks);
+      if (!reqBlocks.company || !reqBlocks.unsubscribe) {
+        return badRequest(res, 'Toplu gönderim şablonunda şirket bilgisi ve abonelikten çıkma bloğu gerekli');
+      }
     }
 
     let finalChannelType = channel_type || null;
@@ -161,13 +248,21 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
       return badRequest(res, subjectCheck.error);
     }
 
+    const finalVariables =
+      built.variables.length > 0
+        ? built.variables
+        : Array.isArray(variables)
+          ? variables
+          : [];
+
     const result = await query(
       `INSERT INTO templates
         (name, content, tenant_id, created_by, is_shared, brand_id, channel_type,
          sender_identity_id, subject, plain_text_content, variables, is_active,
+         description, preheader, editor_json, is_draft, template_kind,
          provider_template_name, provider_template_language, provider_approval_status,
          provider_template_components)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        RETURNING *`,
       [
         String(name).trim(),
@@ -179,9 +274,14 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
         finalChannelType,
         sender_identity_id || null,
         finalChannelType === 'EMAIL' ? subject || null : null,
-        plain_text_content || null,
-        JSON.stringify(variables || []),
+        built.plainText || plain_text_content || null,
+        JSON.stringify(finalVariables),
         Boolean(is_active),
+        description || null,
+        preheader || null,
+        built.editorJson ? JSON.stringify(built.editorJson) : null,
+        Boolean(is_draft),
+        kind,
         provider_template_name || null,
         provider_template_language || null,
         approval,
@@ -200,7 +300,10 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
 router.get('/:id', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res: Response) => {
   try {
     const result = await query(
-      `SELECT * FROM templates WHERE id = $1 AND tenant_id = $2`,
+      `SELECT t.*, b.name AS brand_name
+       FROM templates t
+       LEFT JOIN brands b ON b.id = t.brand_id AND b.tenant_id = t.tenant_id
+       WHERE t.id = $1 AND t.tenant_id = $2`,
       [req.params.id, req.user!.tenantId]
     );
     if (result.rows.length === 0) return notFound(res);
@@ -208,6 +311,60 @@ router.get('/:id', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, 
   } catch (error) {
     console.error('Error fetching template:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch template' });
+  }
+});
+
+router.post('/:id/duplicate', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+    const { enforceCountQuota, afterCountResourceCreated } = await import('../utils/quotaGuards');
+    if (!(await enforceCountQuota(res, tenantId, 'max_templates'))) return;
+
+    const existing = await query(`SELECT * FROM templates WHERE id = $1 AND tenant_id = $2`, [
+      req.params.id,
+      tenantId,
+    ]);
+    if (existing.rows.length === 0) return notFound(res);
+    const src = existing.rows[0];
+
+    const result = await query(
+      `INSERT INTO templates
+        (name, content, tenant_id, created_by, is_shared, brand_id, channel_type,
+         sender_identity_id, subject, plain_text_content, variables, is_active,
+         description, preheader, editor_json, is_draft, template_kind,
+         provider_template_name, provider_template_language, provider_approval_status,
+         provider_template_components)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, $16, $17, $18, $19, $20)
+       RETURNING *`,
+      [
+        `${src.name} (Kopya)`,
+        src.content,
+        tenantId,
+        userId,
+        src.is_shared,
+        src.brand_id,
+        src.channel_type,
+        src.sender_identity_id,
+        src.subject,
+        src.plain_text_content,
+        JSON.stringify(src.variables || []),
+        false,
+        src.description,
+        src.preheader,
+        src.editor_json ? JSON.stringify(src.editor_json) : null,
+        src.template_kind || 'INDIVIDUAL',
+        src.provider_template_name,
+        src.provider_template_language,
+        'UNKNOWN',
+        JSON.stringify(src.provider_template_components || []),
+      ]
+    );
+    await afterCountResourceCreated(tenantId);
+    res.status(201).json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    console.error('Error duplicating template:', error);
+    res.status(500).json({ success: false, error: 'Şablon kopyalanamadı' });
   }
 });
 
@@ -229,9 +386,10 @@ async function updateTemplate(req: AuthRequest, res: Response) {
     if (existingResult.rows.length === 0) return notFound(res);
 
     const current = existingResult.rows[0];
+    const body = req.body;
     const {
       name = current.name,
-      content = current.content,
+      content: bodyContent = current.content,
       is_shared = current.is_shared,
       brand_id = current.brand_id,
       channel_type = current.channel_type,
@@ -240,11 +398,33 @@ async function updateTemplate(req: AuthRequest, res: Response) {
       plain_text_content = current.plain_text_content,
       variables = current.variables,
       is_active = current.is_active,
+      description = current.description,
+      preheader = current.preheader,
+      editor_json = current.editor_json,
+      is_draft = current.is_draft,
+      template_kind = current.template_kind,
       provider_template_name = current.provider_template_name,
       provider_template_language = current.provider_template_language,
       provider_approval_status = current.provider_approval_status,
       provider_template_components = current.provider_template_components,
-    } = req.body;
+    } = body;
+
+    const built = buildContentFromBody(
+      { ...body, content: bodyContent, editor_json },
+      subject
+    );
+    const content = built.content || bodyContent;
+
+    const kind = String(template_kind || 'INDIVIDUAL').toUpperCase();
+    if (!['INDIVIDUAL', 'BULK'].includes(kind)) {
+      return badRequest(res, 'Invalid template_kind');
+    }
+    if (kind === 'BULK' && built.editorJson) {
+      const reqBlocks = hasRequiredBulkBlocks(built.editorJson.blocks);
+      if (!reqBlocks.company || !reqBlocks.unsubscribe) {
+        return badRequest(res, 'Toplu gönderim şablonunda şirket bilgisi ve abonelikten çıkma bloğu gerekli');
+      }
+    }
 
     let finalChannelType = channel_type || null;
     if (finalChannelType && !isChannelType(finalChannelType)) {
@@ -283,17 +463,25 @@ async function updateTemplate(req: AuthRequest, res: Response) {
       return badRequest(res, subjectCheck.error);
     }
 
+    const finalVariables =
+      built.variables.length > 0
+        ? built.variables
+        : Array.isArray(variables)
+          ? variables
+          : [];
+
     const result = await query(
       `UPDATE templates
        SET name = $1, content = $2, is_shared = $3, brand_id = $4, channel_type = $5,
            sender_identity_id = $6, subject = $7, plain_text_content = $8, variables = $9,
            is_active = $10,
-           provider_template_name = $11,
-           provider_template_language = $12,
-           provider_approval_status = $13,
-           provider_template_components = $14,
+           description = $11, preheader = $12, editor_json = $13, is_draft = $14, template_kind = $15,
+           provider_template_name = $16,
+           provider_template_language = $17,
+           provider_approval_status = $18,
+           provider_template_components = $19,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $15 AND tenant_id = $16
+       WHERE id = $20 AND tenant_id = $21
        RETURNING *`,
       [
         String(name).trim(),
@@ -303,9 +491,14 @@ async function updateTemplate(req: AuthRequest, res: Response) {
         finalChannelType,
         sender_identity_id || null,
         finalChannelType === 'EMAIL' ? subject || null : null,
-        plain_text_content || null,
-        JSON.stringify(variables || []),
+        built.plainText || plain_text_content || null,
+        JSON.stringify(finalVariables),
         Boolean(is_active),
+        description || null,
+        preheader || null,
+        built.editorJson ? JSON.stringify(built.editorJson) : editor_json ? JSON.stringify(editor_json) : null,
+        Boolean(is_draft),
+        kind,
         provider_template_name || null,
         provider_template_language || null,
         approval,
@@ -324,9 +517,28 @@ async function updateTemplate(req: AuthRequest, res: Response) {
 
 router.delete('/:id', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, res: Response) => {
   try {
+    const tenantId = req.user!.tenantId;
+    const templateId = Number(req.params.id);
+
+    const usage = await query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM outbound_messages WHERE template_id = $1 AND tenant_id = $2) AS outbound_count,
+         (SELECT COUNT(*)::int FROM drafts WHERE template_id = $1 AND tenant_id = $2) AS draft_count`,
+      [templateId, tenantId]
+    );
+    const outboundCount = Number(usage.rows[0]?.outbound_count || 0);
+    const draftCount = Number(usage.rows[0]?.draft_count || 0);
+    if (outboundCount > 0 || draftCount > 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'Şablon gönderim veya taslak kayıtlarında kullanılıyor; silinemez.',
+        usage: { outboundCount, draftCount },
+      });
+    }
+
     const result = await query(
       `DELETE FROM templates WHERE id = $1 AND tenant_id = $2 RETURNING id`,
-      [req.params.id, req.user!.tenantId]
+      [templateId, tenantId]
     );
     if (result.rows.length === 0) return notFound(res);
     res.json({ success: true });

@@ -1139,4 +1139,60 @@ router.get('/:id/timeline', async (req: AuthRequest, res: Response) => {
   }
 });
 
+router.get('/:id/tags', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = tenantIdOf(req);
+    const contactId = Number(req.params.id);
+    const contact = await getContactOr404(tenantId, contactId, res);
+    if (!contact) return;
+    const result = await query(
+      `SELECT t.id, t.name, t.color, ctl.created_at
+       FROM contact_tag_links ctl
+       JOIN tags t ON t.id = ctl.tag_id AND t.tenant_id = ctl.tenant_id
+       WHERE ctl.tenant_id = $1 AND ctl.contact_id = $2
+       ORDER BY t.name`,
+      [tenantId, contactId]
+    );
+    res.json({ data: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Etiketler getirilemedi' });
+  }
+});
+
+router.post('/:id/tags', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = tenantIdOf(req);
+    const contactId = Number(req.params.id);
+    const tagId = Number(req.body.tag_id ?? req.body.tagId);
+    if (!tagId) return badRequest(res, 'tag_id gerekli');
+    const contact = await getContactOr404(tenantId, contactId, res);
+    if (!contact) return;
+    const tag = await query(`SELECT id FROM tags WHERE id = $1 AND tenant_id = $2`, [tagId, tenantId]);
+    if (tag.rows.length === 0) return notFound(res);
+    await query(
+      `INSERT INTO contact_tag_links (tenant_id, contact_id, tag_id)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [tenantId, contactId, tagId]
+    );
+    res.status(201).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Etiket eklenemedi' });
+  }
+});
+
+router.delete('/:id/tags/:tagId', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = tenantIdOf(req);
+    const contactId = Number(req.params.id);
+    const tagId = Number(req.params.tagId);
+    await query(
+      `DELETE FROM contact_tag_links WHERE tenant_id = $1 AND contact_id = $2 AND tag_id = $3`,
+      [tenantId, contactId, tagId]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Etiket kaldırılamadı' });
+  }
+});
+
 export default router;

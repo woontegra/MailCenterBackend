@@ -38,6 +38,10 @@ const migrations = [
   'saas_platform_upgrade.sql',
   'automation_center_upgrade.sql',
   'imap_idle_upgrade.sql',
+  'email_template_blocks_upgrade.sql',
+  'email_campaigns_upgrade.sql',
+  'campaign_recipient_management_upgrade.sql',
+  'template_media_assets_upgrade.sql',
 ];
 
 async function runMigrations() {

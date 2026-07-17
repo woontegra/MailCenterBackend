@@ -73,3 +73,28 @@ export async function getMailSendQueueCounts() {
     'paused'
   );
 }
+
+export async function enqueueCampaignDispatch(
+  campaignId: number,
+  tenantId: number,
+  delayMs = 0
+) {
+  const jobId = `campaign-dispatch-${campaignId}`;
+  try {
+    return await mailSendQueue.add(
+      'campaign-dispatch',
+      { campaignId, tenantId },
+      {
+        jobId,
+        delay: delayMs > 0 ? delayMs : undefined,
+        attempts: 1,
+        removeOnComplete: 100,
+        removeOnFail: 50,
+      }
+    );
+  } catch (error: any) {
+    const msg = String(error?.message || '');
+    if (msg.toLowerCase().includes('exists')) return null;
+    throw error;
+  }
+}

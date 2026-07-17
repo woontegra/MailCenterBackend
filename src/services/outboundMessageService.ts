@@ -31,6 +31,8 @@ export type CreateOutboundMessageInput = {
   idempotencyKey: string;
   createdBy: number;
   conversationId?: number | null;
+  campaignId?: number | null;
+  campaignRecipientId?: number | null;
 };
 
 export async function findOutboundByIdempotency(tenantId: number, idempotencyKey: string) {
@@ -74,9 +76,9 @@ export async function createOutboundMessage(input: CreateOutboundMessageInput) {
          tenant_id, brand_id, channel_type, sender_identity_id, template_id, draft_id,
          recipient_data, subject, html_content, plain_text_content, message_content,
          template_variables, status, priority, scheduled_at, idempotency_key, created_by,
-         conversation_id, usage_reserved
+         conversation_id, usage_reserved, campaign_id, campaign_recipient_id
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,true
+         $1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,true,$19,$20
        ) RETURNING *`,
       [
         input.tenantId,
@@ -97,6 +99,8 @@ export async function createOutboundMessage(input: CreateOutboundMessageInput) {
         input.idempotencyKey,
         input.createdBy,
         input.conversationId || null,
+        input.campaignId || null,
+        input.campaignRecipientId || null,
       ]
     );
     const row = result.rows[0];
@@ -189,6 +193,17 @@ export async function markOutboundSent(params: {
   );
 
   try {
+    const { syncCampaignRecipientFromOutbound } = await import('./campaignService');
+    await syncCampaignRecipientFromOutbound({
+      tenantId: params.tenantId,
+      outboundMessageId: params.messageId,
+      status: 'SENT',
+    });
+  } catch {
+    /* non-fatal */
+  }
+
+  try {
     const row = await query(
       `SELECT conversation_id, subject FROM outbound_messages
        WHERE id = $1 AND tenant_id = $2`,
@@ -278,6 +293,18 @@ export async function markOutboundFailed(params: {
       params.errorMessage.slice(0, 500),
     ]
   );
+
+  try {
+    const { syncCampaignRecipientFromOutbound } = await import('./campaignService');
+    await syncCampaignRecipientFromOutbound({
+      tenantId: params.tenantId,
+      outboundMessageId: params.messageId,
+      status: 'FAILED',
+      errorMessage: params.errorMessage,
+    });
+  } catch {
+    /* non-fatal */
+  }
 
   try {
     const row = await query(

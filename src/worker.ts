@@ -38,6 +38,32 @@ async function boot() {
     logger.info('IMAP IDLE disabled — inbound sync relies on reconciliation jobs/cron');
   }
 
+  // Promote scheduled campaigns and keep ticking
+  const { promoteScheduledCampaigns } = await import('./services/campaignService');
+  setInterval(async () => {
+    try {
+      await promoteScheduledCampaigns();
+    } catch (err: any) {
+      logger.error(err?.message || 'Campaign scheduler error');
+    }
+  }, 60 * 1000);
+
+  try {
+    const { query } = await import('./config/database');
+    const { enqueueCampaignDispatch } = await import('./queues/mailQueue');
+    const active = await query(
+      `SELECT id, tenant_id FROM campaigns WHERE status IN ('QUEUED', 'SENDING')`
+    );
+    for (const row of active.rows) {
+      await enqueueCampaignDispatch(row.id, row.tenant_id);
+    }
+    if (active.rows.length > 0) {
+      logger.info(`Re-enqueued ${active.rows.length} active campaign dispatch jobs`);
+    }
+  } catch (err: any) {
+    logger.error(err?.message || 'Campaign recovery error');
+  }
+
   logger.info('Worker ready - listening for jobs');
 }
 
