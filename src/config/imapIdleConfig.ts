@@ -34,6 +34,36 @@ export function getImapAccountWatchIntervalSeconds(): number {
   return Number.isFinite(n) && n >= 15 ? Math.min(n, 300) : 45;
 }
 
+const DEFAULT_MAX_IDLE_SECONDS = 240;
+const DEFAULT_SOCKET_TIMEOUT_SECONDS = 900;
+
+/**
+ * ImapFlow keepalive timings (milliseconds).
+ * maxIdleTime must stay below socketTimeout so IDLE refreshes before socket inactivity timeout.
+ */
+export function getImapIdleTimingMs(): { maxIdleTime: number; socketTimeout: number } {
+  const rawMaxIdle = parseInt(process.env.IMAP_MAX_IDLE_TIME_SECONDS || '', 10);
+  const rawSocket = parseInt(process.env.IMAP_SOCKET_TIMEOUT_SECONDS || '', 10);
+
+  let maxIdleSeconds =
+    Number.isFinite(rawMaxIdle) && rawMaxIdle >= 30 ? Math.min(rawMaxIdle, 3600) : DEFAULT_MAX_IDLE_SECONDS;
+  let socketSeconds =
+    Number.isFinite(rawSocket) && rawSocket >= 60 ? Math.min(rawSocket, 7200) : DEFAULT_SOCKET_TIMEOUT_SECONDS;
+
+  if (maxIdleSeconds >= socketSeconds) {
+    console.warn(
+      'IMAP_MAX_IDLE_TIME_SECONDS must be less than IMAP_SOCKET_TIMEOUT_SECONDS; using safe defaults (240/900)'
+    );
+    maxIdleSeconds = DEFAULT_MAX_IDLE_SECONDS;
+    socketSeconds = DEFAULT_SOCKET_TIMEOUT_SECONDS;
+  }
+
+  return {
+    maxIdleTime: maxIdleSeconds * 1000,
+    socketTimeout: socketSeconds * 1000,
+  };
+}
+
 /**
  * Production + IDLE requires Redis. Throws a safe configuration error (no secrets).
  */

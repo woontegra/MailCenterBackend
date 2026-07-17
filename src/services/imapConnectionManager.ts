@@ -23,6 +23,7 @@ import {
   subscribeMailAccountEvents,
 } from './redisEventBus';
 import { withDecryptedCredentials } from '../utils/mailAccountUtils';
+import { ConnectionLostGuard } from '../utils/connectionLostGuard';
 
 export type IdleConnectionState =
   | 'CONNECTING'
@@ -36,11 +37,20 @@ class AccountIdleListener {
   private client: ImapFlow | null = null;
   private lock: ImapAccountLock | null = null;
   private stopRequested = false;
+  private intentionalClose = false;
   private runPromise: Promise<void> | null = null;
   private fetchChain: Promise<void> = Promise.resolve();
   private accountSnapshot: MailAccount;
   private reconnectAttempt = 0;
   private authFailedPermanently = false;
+  private connectionLost = false;
+  private connectionLostError: unknown = null;
+  private readonly connectionLostGuard = new ConnectionLostGuard();
+  private clientEventHandlers: {
+    error: (err: Error) => void;
+    close: () => void;
+  } | null = null;
+  private existsHandler: (() => void) | null = null;
   private readonly fetchService = new MailFetchService();
   private readonly maxDelaySeconds = getImapReconnectMaxDelaySeconds();
   private readonly reconcileEveryMs = getImapReconcileIntervalMinutes() * 60 * 1000;
@@ -69,6 +79,7 @@ class AccountIdleListener {
 
   async stop(): Promise<void> {
     this.stopRequested = true;
+    this.intentionalClose = true;
     await this.teardownClient();
     if (this.lock) {
       await this.lock.release();
@@ -112,7 +123,9 @@ class AccountIdleListener {
 
         this.reconnectAttempt += 1;
         const delay = computeReconnectDelayMs(this.reconnectAttempt, this.maxDelaySeconds);
-        await this.setDbStatus('RECONNECTING', safe, false);
+        if (this.state !== 'RECONNECTING') {
+          await this.setDbStatus('RECONNECTING', safe, false);
+        }
         console.error(
           `IMAP reconnect scheduled for account #${this.accountSnapshot.id} in ${delay}ms:`,
           safe
@@ -133,9 +146,15 @@ class AccountIdleListener {
   private async connectIdleAndServe(): Promise<void> {
     await this.setDbStatus('CONNECTING', null, true);
 
+    this.connectionLost = false;
+    this.connectionLostError = null;
+    this.connectionLostGuard.reset();
+    this.intentionalClose = false;
+
     const decrypted = withDecryptedCredentials(this.accountSnapshot);
     const client = createImapClient(decrypted);
     this.client = client;
+    this.bindClientEvents(client);
 
     await client.connect();
 
@@ -145,29 +164,35 @@ class AccountIdleListener {
       await this.setDbStatus('IDLE', null, true);
       this.reconnectAttempt = 0;
 
-      const onExists = () => {
+      this.existsHandler = () => {
         this.enqueueFetch(client);
       };
-      client.on('exists', onExists);
+      client.on('exists', this.existsHandler);
 
       try {
-        while (!this.stopRequested && client.usable) {
+        while (!this.stopRequested && !this.connectionLost && client.usable) {
           if (Date.now() - this.lastReconcileAt >= this.reconcileEveryMs) {
             await this.runReconciliation(client);
           }
 
-          // ImapFlow idle resolves when server pushes an update or timeout
-          await Promise.race([
-            client.idle(),
-            sleep(25_000).then(() => false),
-            waitUntil(() => this.stopRequested, 25_000),
-          ]);
+          try {
+            // maxIdleTime on ImapFlow refreshes IDLE before socket inactivity timeout
+            await client.idle();
+          } catch (idleErr) {
+            if (!this.intentionalClose && !this.stopRequested) {
+              this.handleConnectionLost(idleErr, 'error');
+            }
+            break;
+          }
 
-          if (this.stopRequested) break;
+          if (this.stopRequested || this.connectionLost) break;
           await this.fetchChain;
         }
       } finally {
-        client.off('exists', onExists);
+        if (this.existsHandler) {
+          client.off('exists', this.existsHandler);
+          this.existsHandler = null;
+        }
       }
     } finally {
       try {
@@ -178,9 +203,67 @@ class AccountIdleListener {
       await this.teardownClient();
     }
 
+    if (this.authFailedPermanently) {
+      throw this.connectionLostError || new Error('IMAP authentication failed');
+    }
+    if (this.connectionLost && !this.stopRequested) {
+      throw this.connectionLostError || new Error('IMAP connection lost');
+    }
     if (!this.stopRequested) {
       throw new Error('IMAP IDLE connection closed');
     }
+  }
+
+  private bindClientEvents(client: ImapFlow): void {
+    const onError = (err: Error) => {
+      if (this.intentionalClose || this.stopRequested) return;
+      console.error(
+        `IMAP socket error for account #${this.accountSnapshot.id}:`,
+        safeImapErrorMessage(err)
+      );
+      this.handleConnectionLost(err, 'error');
+    };
+    const onClose = () => {
+      if (this.intentionalClose || this.stopRequested) return;
+      this.handleConnectionLost(null, 'close');
+    };
+    client.on('error', onError);
+    client.on('close', onClose);
+    this.clientEventHandlers = { error: onError, close: onClose };
+  }
+
+  private unbindClientEvents(client: ImapFlow): void {
+    if (this.clientEventHandlers) {
+      client.removeListener('error', this.clientEventHandlers.error);
+      client.removeListener('close', this.clientEventHandlers.close);
+      this.clientEventHandlers = null;
+    }
+    if (this.existsHandler) {
+      client.removeListener('exists', this.existsHandler);
+      this.existsHandler = null;
+    }
+  }
+
+  private handleConnectionLost(error: unknown | null, source: 'error' | 'close'): void {
+    if (this.intentionalClose || this.stopRequested) return;
+    if (!this.connectionLostGuard.tryHandle()) return;
+
+    this.connectionLost = true;
+    this.connectionLostError = error;
+
+    if (error && isImapAuthError(error)) {
+      this.authFailedPermanently = true;
+      void this.setDbStatus('ERROR', safeImapErrorMessage(error), false);
+      return;
+    }
+
+    const safe =
+      error != null
+        ? safeImapErrorMessage(error)
+        : source === 'close'
+          ? 'IMAP bağlantısı kapandı'
+          : 'IMAP bağlantı hatası';
+    void this.setDbStatus('RECONNECTING', safe, false);
   }
 
   private enqueueFetch(client: ImapFlow): void {
@@ -287,9 +370,13 @@ class AccountIdleListener {
   }
 
   private async teardownClient(): Promise<void> {
+    this.intentionalClose = true;
     const client = this.client;
     this.client = null;
     if (!client) return;
+
+    this.unbindClientEvents(client);
+
     try {
       await client.logout();
     } catch {
@@ -470,18 +557,6 @@ export class ImapConnectionManager {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function waitUntil(predicate: () => boolean, maxMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    const started = Date.now();
-    const timer = setInterval(() => {
-      if (predicate() || Date.now() - started >= maxMs) {
-        clearInterval(timer);
-        resolve();
-      }
-    }, 200);
-  });
 }
 
 let singleton: ImapConnectionManager | null = null;

@@ -1,4 +1,5 @@
 import { ImapFlow } from 'imapflow';
+import { getImapIdleTimingMs } from '../config/imapIdleConfig';
 import { MailAccount, FetchedMessage } from '../types';
 
 export interface MailboxMeta {
@@ -82,6 +83,7 @@ export function safeImapErrorMessage(error: unknown): string {
 }
 
 export function createImapClient(account: MailAccount): ImapFlow {
+  const { maxIdleTime, socketTimeout } = getImapIdleTimingMs();
   return new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
@@ -91,6 +93,8 @@ export function createImapClient(account: MailAccount): ImapFlow {
       pass: account.imap_password,
     },
     logger: false,
+    maxIdleTime,
+    socketTimeout,
   });
 }
 
