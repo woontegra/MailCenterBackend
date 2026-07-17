@@ -13,9 +13,13 @@ import {
   createImapClient,
   fetchMessagesByUidRange,
   isImapAuthError,
+  isInboxOpen,
+  openInbox,
   readMailboxMeta,
   safeImapErrorMessage,
 } from './imapService';
+import { idleDiag } from '../utils/imapDiag';
+import { connectionFingerprint, shouldFetchOnExists } from '../utils/imapIdleHelpers';
 import { MailFetchService } from './mailFetchService';
 import { ImapAccountLock } from './redisAccountLock';
 import {
@@ -50,22 +54,31 @@ class AccountIdleListener {
     error: (err: Error) => void;
     close: () => void;
   } | null = null;
-  private existsHandler: (() => void) | null = null;
+  private existsHandler:
+    | ((data?: { path?: string; count?: number; prevCount?: number }) => void)
+    | null = null;
   private readonly fetchService = new MailFetchService();
   private readonly maxDelaySeconds = getImapReconnectMaxDelaySeconds();
   private readonly reconcileEveryMs = getImapReconcileIntervalMinutes() * 60 * 1000;
   private lastReconcileAt = 0;
+  private connFingerprint: string;
 
   constructor(account: MailAccount) {
     this.accountSnapshot = account;
+    this.connFingerprint = connectionFingerprint(account);
   }
 
   getState(): IdleConnectionState {
     return this.state;
   }
 
+  getConnectionFingerprint(): string {
+    return this.connFingerprint;
+  }
+
   updateAccount(account: MailAccount): void {
     this.accountSnapshot = account;
+    this.connFingerprint = connectionFingerprint(account);
   }
 
   start(): void {
@@ -151,55 +164,101 @@ class AccountIdleListener {
     this.connectionLostGuard.reset();
     this.intentionalClose = false;
 
+    const accountId = this.accountSnapshot.id;
+    const tenantId = this.accountSnapshot.tenant_id!;
+
     const decrypted = withDecryptedCredentials(this.accountSnapshot);
     const client = createImapClient(decrypted);
     this.client = client;
     this.bindClientEvents(client);
 
     await client.connect();
+    idleDiag('IMAP_CONNECTED', { accountId, tenantId });
 
-    const lock = await client.getMailboxLock('INBOX');
     try {
-      await this.runReconciliation(client);
-      await this.setDbStatus('IDLE', null, true);
-      this.reconnectAttempt = 0;
+      // Keep INBOX selected for the whole session (documented monitor pattern).
+      // Do NOT hold a long-lived getMailboxLock: it is a mutex and is not needed
+      // when this listener is the only user of the client.
+      const inbox = await openInbox(client);
+      idleDiag('INBOX_OPENED', {
+        accountId,
+        tenantId,
+        uidValidity: inbox.uidValidity,
+        uidNext: inbox.uidNext,
+        exists: inbox.exists,
+      });
 
-      this.existsHandler = () => {
-        this.enqueueFetch(client);
+      // Attach exists handler before entering IDLE so no notification is missed.
+      this.existsHandler = (data?: { path?: string; count?: number; prevCount?: number }) => {
+        const count = Number(data?.count ?? 0);
+        const prevCount = Number(data?.prevCount ?? 0);
+        idleDiag('EXISTS_RECEIVED', {
+          accountId,
+          tenantId,
+          path: data?.path,
+          prevCount,
+          count,
+          lastSyncUid: Number(this.accountSnapshot.last_sync_uid || 0),
+        });
+        // Only a real increase means new messages to fetch.
+        if (shouldFetchOnExists(count, prevCount)) {
+          this.enqueueFetch(client);
+        }
       };
       client.on('exists', this.existsHandler);
 
-      try {
-        while (!this.stopRequested && !this.connectionLost && client.usable) {
-          if (Date.now() - this.lastReconcileAt >= this.reconcileEveryMs) {
-            await this.runReconciliation(client);
-          }
+      // Startup / catch-up reconciliation before IDLE (recovers missed messages).
+      await this.runReconciliation(client);
 
-          try {
-            // maxIdleTime on ImapFlow refreshes IDLE before socket inactivity timeout
-            await client.idle();
-          } catch (idleErr) {
-            if (!this.intentionalClose && !this.stopRequested) {
-              this.handleConnectionLost(idleErr, 'error');
+      if (!isInboxOpen(client)) {
+        throw new Error('INBOX not selected after reconciliation');
+      }
+      await this.setDbStatus('IDLE', null, true);
+      this.reconnectAttempt = 0;
+      idleDiag('IDLE_ENTERED', {
+        accountId,
+        tenantId,
+        lastSyncUid: Number(this.accountSnapshot.last_sync_uid || 0),
+      });
+
+      while (!this.stopRequested && !this.connectionLost && client.usable) {
+        if (Date.now() - this.lastReconcileAt >= this.reconcileEveryMs) {
+          await this.runReconciliation(client);
+        }
+
+        if (!isInboxOpen(client)) {
+          // Mailbox was unexpectedly deselected; re-open before idling again.
+          await openInbox(client);
+        }
+
+        try {
+          // Single controlled IDLE. Returns after maxIdleTime (renew) or when a
+          // command (fetch triggered by exists) breaks it.
+          const idleStart = Date.now();
+          await client.idle();
+          const elapsedMs = Date.now() - idleStart;
+          if (!this.stopRequested && !this.connectionLost && client.usable) {
+            idleDiag('IDLE_RENEWED', { accountId, tenantId, elapsedMs });
+            // Defensive: if idle() returned almost immediately (e.g. the client
+            // was already idling due to socket-timeout recovery), avoid a tight
+            // CPU loop before idling again.
+            if (elapsedMs < 1000) {
+              await sleep(250);
             }
-            break;
           }
+        } catch (idleErr) {
+          if (!this.intentionalClose && !this.stopRequested) {
+            this.handleConnectionLost(idleErr, 'error');
+          }
+          break;
+        }
 
-          if (this.stopRequested || this.connectionLost) break;
-          await this.fetchChain;
-        }
-      } finally {
-        if (this.existsHandler) {
-          client.off('exists', this.existsHandler);
-          this.existsHandler = null;
-        }
+        if (this.stopRequested || this.connectionLost) break;
+        // Drain any exists-triggered fetch before idling again; also catch messages
+        // that may have arrived during the IDLE renewal gap.
+        await this.fetchChain;
       }
     } finally {
-      try {
-        lock.release();
-      } catch {
-        /* ignore */
-      }
       await this.teardownClient();
     }
 
@@ -293,6 +352,14 @@ class AccountIdleListener {
       fresh.id,
       sinceUid
     );
+    idleDiag('UID_RANGE_FETCHED', {
+      accountId: fresh.id,
+      tenantId: fresh.tenant_id,
+      sinceUid,
+      fetched: messages.length,
+      highestUid,
+      trigger: 'exists',
+    });
 
     if (messages.length === 0) {
       if (highestUid > sinceUid) {
@@ -308,6 +375,7 @@ class AccountIdleListener {
       return;
     }
 
+    // last_sync_uid only advances after successful persist inside this call.
     await this.fetchService.persistFetchedMessages(fresh, messages, {
       uidValidity: meta.uidValidity,
     });
@@ -326,6 +394,14 @@ class AccountIdleListener {
     const meta = await readMailboxMeta(client);
 
     let sinceUid = Number(fresh.last_sync_uid || 0);
+    idleDiag('RECONCILE_STARTED', {
+      accountId: fresh.id,
+      tenantId: fresh.tenant_id,
+      lastSyncUid: sinceUid,
+      uidNext: meta.uidNext,
+      uidValidity: meta.uidValidity,
+    });
+
     if (storedValidity && meta.uidValidity && storedValidity !== meta.uidValidity) {
       console.warn(
         `UIDVALIDITY changed for account #${fresh.id}; rematching recent messages`
@@ -338,6 +414,14 @@ class AccountIdleListener {
       fresh.id,
       sinceUid
     );
+    idleDiag('UID_RANGE_FETCHED', {
+      accountId: fresh.id,
+      tenantId: fresh.tenant_id,
+      sinceUid,
+      fetched: messages.length,
+      highestUid,
+      trigger: 'reconcile',
+    });
 
     if (messages.length > 0) {
       await this.fetchService.persistFetchedMessages(fresh, messages, {
@@ -525,12 +609,19 @@ export class ImapConnectionManager {
 
   private async upsertListener(account: MailAccount, forceRestart: boolean): Promise<void> {
     const existing = this.listeners.get(account.id);
-    if (existing && forceRestart) {
-      await existing.stop();
-      this.listeners.delete(account.id);
-    } else if (existing) {
-      existing.updateAccount(account);
-      return;
+    if (existing) {
+      // Only restart when a real connection setting changed. Unchanged accounts
+      // keep their live IDLE session even if ACCOUNT_UPDATED fired or the watch
+      // re-queried the row.
+      const changed =
+        existing.getConnectionFingerprint() !== connectionFingerprint(account);
+      if (forceRestart && changed) {
+        await existing.stop();
+        this.listeners.delete(account.id);
+      } else {
+        existing.updateAccount(account);
+        return;
+      }
     }
 
     const listener = new AccountIdleListener(account);

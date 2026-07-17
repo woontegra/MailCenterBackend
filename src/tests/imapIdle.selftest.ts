@@ -10,7 +10,18 @@ import {
   isImapIdleEnabled,
 } from '../config/imapIdleConfig';
 import { ConnectionLostGuard } from '../utils/connectionLostGuard';
-import { isImapAuthError, mapImapMessage, safeImapErrorMessage } from '../services/imapService';
+import {
+  isImapAuthError,
+  isInboxOpen,
+  mapImapMessage,
+  openInbox,
+  safeImapErrorMessage,
+} from '../services/imapService';
+import {
+  connectionFingerprint,
+  shouldFetchOnExists,
+} from '../utils/imapIdleHelpers';
+import { MailAccount } from '../types';
 
 function imapAccountLockKey(tenantId: number, accountId: number): string {
   return `mailcenter:imap:lock:${tenantId}:${accountId}`;
@@ -127,7 +138,102 @@ function testErrorListenerPreventsUnhandledCrash() {
   console.log('✓ error listener prevents unhandled ETIMEDOUT');
 }
 
-function main() {
+function baseAccount(overrides: Partial<MailAccount> = {}): MailAccount {
+  return {
+    id: 11,
+    tenant_id: 1,
+    imap_host: 'imap.gmail.com',
+    imap_port: 993,
+    imap_secure: true,
+    imap_user: 'user@example.com',
+    is_active: true,
+    ...(overrides as object),
+  } as MailAccount;
+}
+
+function testExistsOnlyOnIncrease() {
+  assert.strictEqual(shouldFetchOnExists(6, 5), true, 'count increase triggers fetch');
+  assert.strictEqual(shouldFetchOnExists(5, 5), false, 'unchanged count no fetch');
+  assert.strictEqual(shouldFetchOnExists(4, 5), false, 'expunge/decrease no fetch');
+  console.log('✓ exists triggers fetch only when count increases');
+}
+
+function testInboxOpenGuards() {
+  assert.strictEqual(isInboxOpen({ mailbox: false } as any), false, 'closed mailbox');
+  assert.strictEqual(
+    isInboxOpen({ mailbox: { path: 'Archive' } } as any),
+    false,
+    'wrong mailbox'
+  );
+  assert.strictEqual(isInboxOpen({ mailbox: { path: 'INBOX' } } as any), true, 'INBOX open');
+  console.log('✓ isInboxOpen guards');
+}
+
+async function testOpenInboxRequiresUidValidity() {
+  // Mailbox opened but no UIDVALIDITY -> must throw (do not mark IDLE).
+  const noValidity = {
+    mailbox: { path: 'INBOX', uidValidity: 0n, uidNext: 1, exists: 0 },
+    async mailboxOpen() {
+      return { path: 'INBOX', uidValidity: 0n, uidNext: 1, exists: 0 };
+    },
+  } as any;
+  await assert.rejects(() => openInbox(noValidity), /UIDVALIDITY/);
+
+  const good = {
+    mailbox: { path: 'INBOX', uidValidity: 123n, uidNext: 55, exists: 5 },
+    async mailboxOpen() {
+      return { path: 'INBOX', uidValidity: 123n, uidNext: 55, exists: 5 };
+    },
+  } as any;
+  const info = await openInbox(good);
+  assert.strictEqual(info.uidValidity, 123);
+  assert.strictEqual(info.uidNext, 55);
+  assert.strictEqual(info.exists, 5);
+  console.log('✓ openInbox requires UIDVALIDITY before IDLE');
+}
+
+function testConnectionFingerprintDeterministic() {
+  const a = baseAccount();
+  const same = baseAccount({ id: 999 } as any); // id not part of fingerprint
+  assert.strictEqual(
+    connectionFingerprint(a),
+    connectionFingerprint(same),
+    'unrelated fields do not change fingerprint'
+  );
+
+  // last_sync_uid / updated_at style churn must NOT change the fingerprint.
+  const churned = baseAccount({ last_sync_uid: 42, imap_uidvalidity: 7 } as any);
+  assert.strictEqual(
+    connectionFingerprint(a),
+    connectionFingerprint(churned),
+    'sync counters do not restart listener'
+  );
+
+  const hostChanged = baseAccount({ imap_host: 'imap.other.com' });
+  assert.notStrictEqual(
+    connectionFingerprint(a),
+    connectionFingerprint(hostChanged),
+    'host change restarts listener'
+  );
+
+  const credChanged = baseAccount({ encrypted_credentials: 'newblob' } as any);
+  const credOriginal = baseAccount({ encrypted_credentials: 'oldblob' } as any);
+  assert.notStrictEqual(
+    connectionFingerprint(credOriginal),
+    connectionFingerprint(credChanged),
+    'credential change restarts listener'
+  );
+
+  const disabled = baseAccount({ is_active: false });
+  assert.notStrictEqual(
+    connectionFingerprint(a),
+    connectionFingerprint(disabled),
+    'active flag change restarts listener'
+  );
+  console.log('✓ connection fingerprint deterministic');
+}
+
+async function main() {
   testReconnectBackoff();
   testAuthErrorDetection();
   testMessageIdStable();
@@ -136,7 +242,14 @@ function main() {
   testIdleTimingConfig();
   testConnectionLostGuard();
   testErrorListenerPreventsUnhandledCrash();
+  testExistsOnlyOnIncrease();
+  testInboxOpenGuards();
+  await testOpenInboxRequiresUidValidity();
+  testConnectionFingerprintDeterministic();
   console.log('\nAll IMAP IDLE self-tests passed.');
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

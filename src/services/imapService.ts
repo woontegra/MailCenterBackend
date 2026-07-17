@@ -95,7 +95,44 @@ export function createImapClient(account: MailAccount): ImapFlow {
     logger: false,
     maxIdleTime,
     socketTimeout,
+    // Use a single controlled IDLE loop; disabling auto-idle prevents ImapFlow's
+    // internal idle timer from racing with our explicit idle() loop (which caused
+    // idle() to return immediately when this.idling was already true).
+    disableAutoIdle: true,
   });
+}
+
+export interface OpenMailboxInfo {
+  path: string;
+  uidValidity: number;
+  uidNext: number;
+  exists: number;
+}
+
+/**
+ * Opens INBOX (SELECT) and returns its live state. Throws if the mailbox is not
+ * properly selected, so callers can avoid marking a connection IDLE prematurely.
+ */
+export async function openInbox(client: ImapFlow): Promise<OpenMailboxInfo> {
+  const mailbox = await client.mailboxOpen('INBOX');
+  if (!client.mailbox || client.mailbox.path !== 'INBOX') {
+    throw new Error('INBOX could not be selected');
+  }
+  const uidValidity = Number(mailbox.uidValidity || client.mailbox.uidValidity || 0);
+  if (!uidValidity) {
+    throw new Error('INBOX opened without UIDVALIDITY');
+  }
+  return {
+    path: 'INBOX',
+    uidValidity,
+    uidNext: Number(mailbox.uidNext || client.mailbox.uidNext || 1),
+    exists: Number(mailbox.exists ?? client.mailbox.exists ?? 0),
+  };
+}
+
+/** True only when INBOX is currently selected on this client. */
+export function isInboxOpen(client: ImapFlow): boolean {
+  return Boolean(client.mailbox && client.mailbox.path === 'INBOX');
 }
 
 export async function readMailboxMeta(client: ImapFlow): Promise<MailboxMeta> {

@@ -9,6 +9,7 @@ import webhookService from './webhookService';
 import { migrateLegacyCredentials, withDecryptedCredentials } from '../utils/mailAccountUtils';
 import { linkInboundEmailToConversation } from './conversationService';
 import { publishInboxRealtime } from './redisEventBus';
+import { idleDiag } from '../utils/imapDiag';
 
 export interface PersistResult {
   saved: boolean;
@@ -304,6 +305,14 @@ export class MailFetchService {
         accountId: account.id,
         subject: mail.subject,
         from: mail.from_address,
+      });
+
+      idleDiag('MESSAGE_PERSISTED', {
+        accountId: account.id,
+        tenantId,
+        uid: uid ?? undefined,
+        mailId: mail.id,
+        conversationId: conversationId ?? undefined,
       });
 
       await trackUsage(tenantId, null, 'mail_fetch', 'mail', mail.id);
