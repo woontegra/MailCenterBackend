@@ -11,6 +11,7 @@ import {
 } from '../config/imapIdleConfig';
 import { ConnectionLostGuard } from '../utils/connectionLostGuard';
 import {
+  fetchMessagesByUidRange,
   isImapAuthError,
   isInboxOpen,
   mapImapMessage,
@@ -192,6 +193,58 @@ async function testOpenInboxRequiresUidValidity() {
   console.log('✓ openInbox requires UIDVALIDITY before IDLE');
 }
 
+async function testFetchRangeDoesNotNestImapCommands() {
+  let fetchActive = false;
+  let nestedDownloadWhileFetch = false;
+
+  const fakeClient = {
+    async status() {
+      return { uidValidity: 123n, uidNext: 380, messages: 2 };
+    },
+    async *fetch() {
+      fetchActive = true;
+      yield {
+        uid: 379,
+        envelope: {
+          subject: 'One',
+          from: [{ address: 'a@example.com' }],
+          to: [{ address: 'b@example.com' }],
+          date: new Date('2026-01-01'),
+        },
+        headers: new Map(),
+      };
+      yield {
+        uid: 380,
+        envelope: {
+          subject: 'Two',
+          from: [{ address: 'a@example.com' }],
+          to: [{ address: 'b@example.com' }],
+          date: new Date('2026-01-02'),
+        },
+        headers: new Map(),
+      };
+      fetchActive = false;
+    },
+    async download() {
+      if (fetchActive) {
+        nestedDownloadWhileFetch = true;
+      }
+      return {
+        content: (async function* () {
+          yield Buffer.from('preview');
+        })(),
+      };
+    },
+  } as any;
+
+  const result = await fetchMessagesByUidRange(fakeClient, 11, 0);
+  assert.strictEqual(nestedDownloadWhileFetch, false, 'no nested IMAP command inside fetch loop');
+  assert.strictEqual(result.messages.length, 2);
+  assert.strictEqual(result.messages[0].bodyPreview, 'preview');
+  assert.strictEqual(result.highestUid, 380);
+  console.log('✓ fetch range avoids nested IMAP commands');
+}
+
 function testConnectionFingerprintDeterministic() {
   const a = baseAccount();
   const same = baseAccount({ id: 999 } as any); // id not part of fingerprint
@@ -245,6 +298,7 @@ async function main() {
   testExistsOnlyOnIncrease();
   testInboxOpenGuards();
   await testOpenInboxRequiresUidValidity();
+  await testFetchRangeDoesNotNestImapCommands();
   testConnectionFingerprintDeterministic();
   console.log('\nAll IMAP IDLE self-tests passed.');
 }

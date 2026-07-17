@@ -197,7 +197,6 @@ export async function fetchMessagesByUidRange(
       const mapped = mapImapMessage(msg, accountId);
       if (!mapped || !mapped.uid) continue;
       if (sinceUid > 0 && mapped.uid <= sinceUid) continue;
-      mapped.bodyPreview = await downloadBodyPreview(client, mapped.uid);
       if (mapped.uid > highestUid) highestUid = mapped.uid;
       messages.push(mapped);
     }
@@ -210,6 +209,16 @@ export async function fetchMessagesByUidRange(
   }
 
   messages.sort((a, b) => (a.uid || 0) - (b.uid || 0));
+
+  // IMPORTANT: ImapFlow fetch iterators must not run nested IMAP commands inside
+  // the `for await (... of client.fetch())` loop; doing so deadlocks the FETCH
+  // command and startup reconciliation never completes. Download previews only
+  // after the FETCH iterator has fully finished.
+  for (const message of messages) {
+    if (!message.uid) continue;
+    message.bodyPreview = await downloadBodyPreview(client, message.uid);
+  }
+
   return { messages, meta, highestUid };
 }
 
