@@ -43,6 +43,7 @@ const migrations = [
   'campaign_recipient_management_upgrade.sql',
   'template_media_assets_upgrade.sql',
   'mail_html_body_upgrade.sql',
+  'whatsapp_embedded_signup_upgrade.sql',
 ];
 
 async function runMigrations() {

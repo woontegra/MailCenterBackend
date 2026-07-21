@@ -8,13 +8,15 @@ import {
 import { advanceOutboundDeliveryStatus } from './outboundMessageService';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
 import { linkInboundWhatsAppMessage } from './conversationService';
+import { publishInboxRealtime } from './redisEventBus';
+import { emitToTenant } from './socketService';
 
 export async function findWhatsAppConnectionByPhoneNumberId(phoneNumberId: string) {
   const result = await query(
     `SELECT *
      FROM channel_connections
      WHERE channel_type = 'WHATSAPP'
-       AND UPPER(COALESCE(provider, '')) = 'META_WHATSAPP_CLOUD'
+       AND UPPER(COALESCE(provider, '')) IN ('META_WHATSAPP_CLOUD', 'META_CLOUD')
        AND settings->>'phone_number_id' = $1`,
     [phoneNumberId]
   );
@@ -26,7 +28,7 @@ export async function findWhatsAppConnectionsByVerifyToken(verifyToken: string) 
     `SELECT *
      FROM channel_connections
      WHERE channel_type = 'WHATSAPP'
-       AND UPPER(COALESCE(provider, '')) = 'META_WHATSAPP_CLOUD'
+       AND UPPER(COALESCE(provider, '')) IN ('META_WHATSAPP_CLOUD', 'META_CLOUD')
        AND encrypted_credentials IS NOT NULL`
   );
   const matches = [];
@@ -134,8 +136,9 @@ export async function processMetaWhatsAppWebhookEvents(params: {
             ]
           );
           if (insert.rows[0]?.id) {
+            let conversationId: number | null = null;
             try {
-              await linkInboundWhatsAppMessage({
+              conversationId = await linkInboundWhatsAppMessage({
                 tenantId: connection.tenant_id,
                 brandId: connection.brand_id,
                 channelConnectionId: connection.id,
@@ -147,6 +150,44 @@ export async function processMetaWhatsAppWebhookEvents(params: {
             } catch (linkErr) {
               console.error('Error linking WhatsApp inbound to conversation');
             }
+
+            try {
+              await query(
+                `UPDATE channel_connections
+                 SET settings = jsonb_set(
+                   COALESCE(settings, '{}'::jsonb),
+                   '{last_inbound_at}',
+                   to_jsonb($1::text),
+                   true
+                 ),
+                 updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $2 AND tenant_id = $3`,
+                [
+                  (Number.isNaN(receivedAt.getTime()) ? new Date() : receivedAt).toISOString(),
+                  connection.id,
+                  connection.tenant_id,
+                ]
+              );
+            } catch {
+              /* non-fatal */
+            }
+
+            try {
+              emitToTenant(connection.tenant_id, 'conversation_updated', {
+                conversationId,
+                channel: 'WHATSAPP',
+                inboundMessageId: insert.rows[0].id,
+              });
+              await publishInboxRealtime({
+                type: 'conversation_updated',
+                tenantId: connection.tenant_id,
+                conversationId: conversationId ?? undefined,
+                accountId: undefined,
+              });
+            } catch {
+              /* realtime non-fatal */
+            }
+
             try {
               const { emitAutomationEvent } = await import('./automationEmitter');
               await emitAutomationEvent({

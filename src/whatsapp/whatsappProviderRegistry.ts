@@ -3,6 +3,8 @@ import { WhatsAppProviderAdapter, WhatsAppProviderName } from './WhatsAppProvide
 
 const adapters: Record<string, () => WhatsAppProviderAdapter> = {
   META_WHATSAPP_CLOUD: () => new MetaWhatsAppCloudAdapter(),
+  // Alias used in product docs / Embedded Signup naming
+  META_CLOUD: () => new MetaWhatsAppCloudAdapter(),
 };
 
 export function getWhatsAppProviderAdapter(

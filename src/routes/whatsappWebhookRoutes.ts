@@ -6,13 +6,14 @@ import {
   findWhatsAppConnectionsByVerifyToken,
   processMetaWhatsAppWebhookEvents,
 } from '../services/whatsappWebhookService';
+import { getMetaAppSecret, getMetaWhatsAppWebhookVerifyToken } from '../config/metaWhatsAppConfig';
 
 const router = Router();
 const adapter = new MetaWhatsAppCloudAdapter();
 
 /**
  * Meta webhook verification (GET)
- * Official: hub.mode=subscribe, hub.verify_token, hub.challenge
+ * Accepts platform-level META_WHATSAPP_WEBHOOK_VERIFY_TOKEN or per-connection tokens.
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
@@ -24,8 +25,16 @@ router.get('/', async (req: Request, res: Response) => {
       return res.status(403).send('Forbidden');
     }
 
-    const matches = await findWhatsAppConnectionsByVerifyToken(token);
-    if (matches.length === 0) {
+    const platformToken = getMetaWhatsAppWebhookVerifyToken();
+    const platformOk = Boolean(platformToken && token === platformToken);
+
+    let connectionOk = false;
+    if (!platformOk) {
+      const matches = await findWhatsAppConnectionsByVerifyToken(token);
+      connectionOk = matches.length > 0;
+    }
+
+    if (!platformOk && !connectionOk) {
       return res.status(403).send('Forbidden');
     }
 
@@ -49,7 +58,7 @@ router.get('/', async (req: Request, res: Response) => {
 
 /**
  * Meta webhook events (POST)
- * Requires valid X-Hub-Signature-256; invalid signatures change nothing.
+ * Signature: platform META_APP_SECRET first, then per-connection app_secret.
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
@@ -68,9 +77,25 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid JSON' });
     }
 
+    if (payload?.object && payload.object !== 'whatsapp_business_account') {
+      return res.status(200).json({ success: true, processed: 0 });
+    }
+
+    const signatureHeader =
+      req.header('X-Hub-Signature-256') || req.header('x-hub-signature-256');
+
+    const platformSecret = getMetaAppSecret();
+    let signatureOk = false;
+    if (platformSecret) {
+      signatureOk = adapter.validateWebhookSignature({
+        appSecret: platformSecret,
+        rawBody,
+        signatureHeader,
+      });
+    }
+
     const events = adapter.parseWebhook(payload);
     if (events.length === 0) {
-      // Always 200 to Meta for unrecognized but well-formed payloads
       return res.status(200).json({ success: true, processed: 0 });
     }
 
@@ -79,25 +104,33 @@ router.post('/', async (req: Request, res: Response) => {
 
     for (const phoneNumberId of phoneNumberIds) {
       const connections = await findWhatsAppConnectionByPhoneNumberId(phoneNumberId);
-      if (connections.length === 0) continue;
+      if (connections.length === 0) {
+        console.warn(
+          JSON.stringify({
+            event: 'whatsapp_webhook_unknown_phone',
+            phoneNumberIdSuffix: String(phoneNumberId).slice(-4),
+          })
+        );
+        continue;
+      }
 
-      // Signature must validate against at least one matching connection's app secret
-      let signatureOk = false;
-      for (const connection of connections) {
-        try {
-          const creds = unpackWhatsAppCredentials(connection.encrypted_credentials);
-          if (
-            adapter.validateWebhookSignature({
-              appSecret: creds.appSecret,
-              rawBody,
-              signatureHeader: req.header('X-Hub-Signature-256') || req.header('x-hub-signature-256'),
-            })
-          ) {
-            signatureOk = true;
-            break;
+      if (!signatureOk) {
+        for (const connection of connections) {
+          try {
+            const creds = unpackWhatsAppCredentials(connection.encrypted_credentials);
+            if (
+              adapter.validateWebhookSignature({
+                appSecret: creds.appSecret,
+                rawBody,
+                signatureHeader,
+              })
+            ) {
+              signatureOk = true;
+              break;
+            }
+          } catch {
+            /* skip */
           }
-        } catch {
-          /* skip */
         }
       }
 
@@ -116,8 +149,6 @@ router.post('/', async (req: Request, res: Response) => {
     return res.status(200).json({ success: true, processed: total });
   } catch (error) {
     console.error('WhatsApp webhook processing error');
-    // Return 200 to avoid aggressive Meta retries on our bugs for already-parsed payloads?
-    // Prefer 500 so Meta retries transient failures.
     return res.status(500).json({ error: 'Webhook processing failed' });
   }
 });

@@ -61,7 +61,7 @@ app.use(express.json({
   verify: (req: any, _res, buf) => {
     const url = String(req.originalUrl || '');
     if (
-      url.startsWith('/api/webhooks/whatsapp/meta') ||
+      url.startsWith('/api/webhooks/whatsapp') ||
       url.startsWith('/api/billing/webhook')
     ) {
       req.rawBody = Buffer.from(buf);
@@ -109,6 +109,7 @@ import whatsappInboxRoutes from './routes/whatsappInboxRoutes';
 import whatsappWebhookRoutes from './routes/whatsappWebhookRoutes';
 import deliverabilityRoutes from './routes/deliverabilityRoutes';
 import channelConnectionRoutes from './routes/channelConnectionRoutes';
+import whatsappEmbeddedSignupRoutes from './routes/whatsappEmbeddedSignupRoutes';
 import senderIdentityRoutes from './routes/senderIdentityRoutes';
 import campaignRoutes from './routes/campaignRoutes';
 import segmentRoutes from './routes/segmentRoutes';
@@ -122,12 +123,18 @@ app.use('/api/threads', threadRoutes);
 app.use('/api/tags', tagRoutes);
 app.use('/api/brands', deliverabilityRoutes);
 app.use('/api/brands', brandRoutes);
+app.use('/api/channel-connections', whatsappEmbeddedSignupRoutes);
 app.use('/api/channel-connections', channelConnectionRoutes);
 app.use('/api/sender-identities', senderIdentityRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/storage', storageRoutes);
+// Public Meta WhatsApp webhook endpoints MUST be mounted before the
+// authenticated /api/webhooks router, otherwise its authenticate middleware
+// intercepts GET /api/webhooks/whatsapp and returns 401 to Meta.
+app.use('/api/webhooks/whatsapp/meta', whatsappWebhookRoutes);
+app.use('/api/webhooks/whatsapp', whatsappWebhookRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/white-label', whiteLabelRoutes);
@@ -140,7 +147,6 @@ app.use('/api/sms', smsRoutes);
 app.use('/api/send-whatsapp', sendWhatsAppRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/inbox/whatsapp', whatsappInboxRoutes);
-app.use('/api/webhooks/whatsapp/meta', whatsappWebhookRoutes);
 app.use('/api/auto-tag', autoTagRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/notifications', notificationRoutes);
