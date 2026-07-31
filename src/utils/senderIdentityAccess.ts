@@ -294,6 +294,109 @@ export async function resolveEligibleWhatsAppSenderIdentity(
   };
 }
 
+/**
+ * Ensure an active/verified WhatsApp sender_identity exists for an ACTIVE connection.
+ * Used by compose when channel is selected but SI was never created (best-effort signup gap).
+ */
+export async function ensureWhatsAppSenderForConnection(
+  connectionId: number,
+  tenantId: number
+): Promise<{
+  sender_identity_id: number;
+  channel_connection_id: number;
+  brand_id: number;
+  display_name: string;
+  sender_value: string;
+  business_phone: string | null;
+  phone_number_id: string | null;
+  created: boolean;
+} | null> {
+  const conn = await query(
+    `SELECT cc.id, cc.brand_id, cc.channel_type, cc.status, cc.display_name, cc.settings,
+            cc.encrypted_credentials
+     FROM channel_connections cc
+     WHERE cc.id = $1 AND cc.tenant_id = $2`,
+    [connectionId, tenantId]
+  );
+  if (!conn.rows[0]) return null;
+  const row = conn.rows[0];
+  if (row.channel_type !== 'WHATSAPP') {
+    throw Object.assign(new Error('Kanal WhatsApp değil'), { code: 'SENDER_NOT_ELIGIBLE' });
+  }
+  if (row.status !== 'ACTIVE') {
+    throw Object.assign(new Error('WhatsApp kanalı aktif değil'), { code: 'SENDER_NOT_ELIGIBLE' });
+  }
+  if (!row.encrypted_credentials) {
+    throw Object.assign(new Error('WhatsApp kimlik bilgileri eksik'), { code: 'SENDER_NOT_ELIGIBLE' });
+  }
+
+  const settings =
+    row.settings && typeof row.settings === 'object' && !Array.isArray(row.settings)
+      ? row.settings
+      : {};
+  const businessPhone = String(
+    settings.business_phone_number || settings.business_phone || ''
+  ).trim();
+  const phoneNumberId = String(settings.phone_number_id || '').trim() || null;
+  const verifiedName = String(settings.verified_name || '').trim();
+  const displayName =
+    verifiedName || String(row.display_name || '').trim() || businessPhone || 'WhatsApp';
+  const senderValue = businessPhone || phoneNumberId || displayName;
+
+  const existing = await query(
+    `SELECT id, display_name, sender_value
+     FROM sender_identities
+     WHERE tenant_id = $1 AND channel_connection_id = $2 AND channel_type = 'WHATSAPP'
+     ORDER BY id ASC
+     LIMIT 1`,
+    [tenantId, connectionId]
+  );
+
+  if (existing.rows[0]) {
+    // Reactivate / verify if needed so compose can send
+    await query(
+      `UPDATE sender_identities
+       SET is_active = true,
+           is_verified = true,
+           display_name = COALESCE(NULLIF(display_name, ''), $2),
+           sender_value = COALESCE(NULLIF(sender_value, ''), $3),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND tenant_id = $4`,
+      [existing.rows[0].id, displayName, senderValue, tenantId]
+    );
+    return {
+      sender_identity_id: existing.rows[0].id,
+      channel_connection_id: connectionId,
+      brand_id: row.brand_id,
+      display_name: displayName,
+      sender_value: senderValue,
+      business_phone: businessPhone || null,
+      phone_number_id: phoneNumberId,
+      created: false,
+    };
+  }
+
+  const inserted = await query(
+    `INSERT INTO sender_identities
+       (tenant_id, brand_id, channel_connection_id, channel_type, display_name, sender_value,
+        is_default, is_active, is_verified)
+     VALUES ($1,$2,$3,'WHATSAPP',$4,$5,true,true,true)
+     RETURNING id`,
+    [tenantId, row.brand_id, connectionId, displayName, senderValue]
+  );
+
+  return {
+    sender_identity_id: inserted.rows[0].id,
+    channel_connection_id: connectionId,
+    brand_id: row.brand_id,
+    display_name: displayName,
+    sender_value: senderValue,
+    business_phone: businessPhone || null,
+    phone_number_id: phoneNumberId,
+    created: true,
+  };
+}
+
 export function respondSenderResolveError(res: Response, error: any) {
   if (error?.code === 'SENDER_NOT_ELIGIBLE') {
     return res.status(400).json({

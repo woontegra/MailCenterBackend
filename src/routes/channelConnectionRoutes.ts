@@ -128,7 +128,12 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const params: unknown[] = [tenantId];
     let sql = `
       SELECT cc.*, b.name AS brand_name, b.accent_color AS brand_accent_color,
-             ma.email AS mail_account_email
+             ma.email AS mail_account_email,
+             (
+               SELECT si.id FROM sender_identities si
+               WHERE si.channel_connection_id = cc.id AND si.tenant_id = cc.tenant_id
+               ORDER BY si.id ASC LIMIT 1
+             ) AS sender_identity_id
       FROM channel_connections cc
       JOIN brands b ON b.id = cc.brand_id AND b.tenant_id = cc.tenant_id
       LEFT JOIN mail_accounts ma ON ma.id = cc.mail_account_id AND ma.tenant_id = cc.tenant_id
@@ -530,5 +535,36 @@ router.delete('/:id', requirePermission('CHANNEL_MANAGE'), async (req: AuthReque
     res.status(500).json({ error: 'Failed to delete channel connection' });
   }
 });
+
+/**
+ * Ensure WhatsApp sender_identity for an ACTIVE channel connection (compose helper).
+ */
+router.post(
+  '/:id/ensure-whatsapp-sender',
+  requirePermission('WHATSAPP_SEND'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const tenantId = req.user!.tenantId;
+      const id = Number(req.params.id);
+      if (!id) return badRequest(res, 'Geçersiz kanal');
+
+      const { ensureWhatsAppSenderForConnection, respondSenderResolveError } = await import(
+        '../utils/senderIdentityAccess'
+      );
+      let ensured;
+      try {
+        ensured = await ensureWhatsAppSenderForConnection(id, tenantId);
+      } catch (error: any) {
+        return respondSenderResolveError(res, error);
+      }
+      if (!ensured) return notFound(res);
+
+      res.json({ success: true, data: ensured });
+    } catch (error) {
+      console.error('Ensure WhatsApp sender error');
+      res.status(500).json({ error: 'WhatsApp göndericisi hazırlanamadı' });
+    }
+  }
+);
 
 export default router;
