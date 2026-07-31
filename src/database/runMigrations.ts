@@ -44,6 +44,8 @@ const migrations = [
   'template_media_assets_upgrade.sql',
   'mail_html_body_upgrade.sql',
   'whatsapp_embedded_signup_upgrade.sql',
+  'admin_platform_upgrade.sql',
+  'admin_control_center_upgrade.sql',
 ];
 
 async function runMigrations() {

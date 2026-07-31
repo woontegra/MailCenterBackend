@@ -87,6 +87,22 @@ export function isTenantRole(value: unknown): value is TenantRole {
   return typeof value === 'string' && TENANT_ROLES.includes(value as TenantRole);
 }
 
+/** User-facing Turkish labels; DB/API keep English codes. */
+export const TENANT_ROLE_LABELS_TR: Record<TenantRole, string> = {
+  OWNER: 'Sahip',
+  ADMIN: 'Yönetici',
+  MANAGER: 'Müdür',
+  AGENT: 'Personel',
+  VIEWER: 'Görüntüleyici',
+};
+
+export function tenantRoleLabelTr(role: string | null | undefined): string {
+  const code = String(role || '').toUpperCase();
+  if (code === 'MEMBER') return 'Personel';
+  if (isTenantRole(code)) return TENANT_ROLE_LABELS_TR[code];
+  return code || '—';
+}
+
 export function isPermission(value: unknown): value is Permission {
   return typeof value === 'string' && (PERMISSIONS as readonly string[]).includes(value);
 }

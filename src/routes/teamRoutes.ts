@@ -9,6 +9,7 @@ import {
   canAssignTenantRole,
   isPermission,
   PermissionOverride,
+  tenantRoleLabelTr,
 } from '../permissions/permissionCatalog';
 import {
   bumpPermissionVersion,
@@ -192,7 +193,7 @@ router.post('/invites', async (req: AuthRequest, res: Response) => {
       toEmail: email,
       inviteUrl,
       tenantName: tenant.rows[0]?.name || 'Mail Center',
-      roleLabel: tenantRole,
+      roleLabel: tenantRoleLabelTr(tenantRole),
     });
 
     await query(
@@ -271,7 +272,7 @@ router.post('/invites/:id/resend', async (req: AuthRequest, res: Response) => {
       toEmail: invite.email,
       inviteUrl,
       tenantName: tenant.rows[0]?.name || 'Mail Center',
-      roleLabel: invite.tenant_role || invite.role || 'AGENT',
+      roleLabel: tenantRoleLabelTr(invite.tenant_role || invite.role || 'AGENT'),
     });
 
     await query(

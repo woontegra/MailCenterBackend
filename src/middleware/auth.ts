@@ -100,3 +100,6 @@ export const isSuperAdmin = (
     res.status(403).json({ error: 'Forbidden' });
   }
 };
+
+/** Alias for platform SUPER_ADMIN gate (users.role === 'super_admin'). */
+export const requireSuperAdmin = isSuperAdmin;

@@ -99,6 +99,8 @@ import inboxGroupedRoutes from './routes/inboxGroupedRoutes';
 import threadRoutes from './routes/threadRoutes';
 import billingRoutes from './routes/billingRoutes';
 import adminRoutes from './routes/adminRoutes';
+import adminPlatformRoutes from './routes/adminPlatformRoutes';
+import adminPlatformModules from './routes/adminPlatformModules';
 import oauthRoutes from './routes/oauthRoutes';
 import storageRoutes from './routes/storageRoutes';
 import webhookRoutes from './routes/webhookRoutes';
@@ -135,6 +137,8 @@ app.use('/api/channel-connections', channelConnectionRoutes);
 app.use('/api/sender-identities', senderIdentityRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin-platform', adminPlatformRoutes);
+app.use('/api/admin-platform', adminPlatformModules);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/storage', storageRoutes);
 // Public Meta WhatsApp webhook endpoints MUST be mounted before the
