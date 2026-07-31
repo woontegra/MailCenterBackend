@@ -123,7 +123,7 @@ function resolveEncryptedCredentials(params: {
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
-    const { brand_id, channel_type } = req.query;
+    const { brand_id, channel_type, status } = req.query;
 
     const params: unknown[] = [tenantId];
     let sql = `
@@ -151,11 +151,33 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       params.push(channel_type);
       sql += ` AND cc.channel_type = $${params.length}`;
     }
+    if (status) {
+      if (!isChannelStatus(String(status))) {
+        return badRequest(res, 'Invalid status');
+      }
+      params.push(String(status).toUpperCase());
+      sql += ` AND cc.status = $${params.length}`;
+    }
 
     sql += ' ORDER BY cc.created_at DESC';
 
     const result = await query(sql, params);
-    res.json(result.rows.map((row) => sanitizeConnection(row)));
+    // Dedupe WhatsApp by phone_number_id (keep newest)
+    const seenPnid = new Set<string>();
+    const rows = [];
+    for (const row of result.rows) {
+      const sanitized = sanitizeConnection(row) as any;
+      if (String(row.channel_type).toUpperCase() === 'WHATSAPP') {
+        const pnid = String(sanitized.phone_number_id || '').trim();
+        if (pnid) {
+          if (seenPnid.has(pnid)) continue;
+          seenPnid.add(pnid);
+        }
+        if (!pnid) continue; // compose-ready senders require phone_number_id
+      }
+      rows.push(sanitized);
+    }
+    res.json(rows);
   } catch (error) {
     console.error('Error listing channel connections:', error);
     res.status(500).json({ error: 'Failed to list channel connections' });

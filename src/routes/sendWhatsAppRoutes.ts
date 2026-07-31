@@ -71,6 +71,11 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     const senderIdentityId = Number(
       req.body.senderIdentityId ?? req.body.sender_identity_id
     );
+    const channelConnectionIdRaw =
+      req.body.channelConnectionId ?? req.body.channel_connection_id;
+    const channelConnectionId = channelConnectionIdRaw
+      ? Number(channelConnectionIdRaw)
+      : null;
     const templateId = req.body.templateId ?? req.body.template_id ?? null;
     const contactPointIdRaw = req.body.contactPointId ?? req.body.contact_point_id;
     const contactPointId = contactPointIdRaw ? Number(contactPointIdRaw) : null;
@@ -109,6 +114,17 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       return respondSenderResolveError(res, error);
     }
     if (!resolved) return notFound(res);
+
+    if (
+      channelConnectionId &&
+      Number(resolved.channel_connection_id) !== Number(channelConnectionId)
+    ) {
+      return badRequest(res, 'senderIdentityId ile channelConnectionId uyuşmuyor');
+    }
+
+    const connectionWabaId = String(
+      (resolved.settings as any)?.waba_id || ''
+    ).trim();
 
     const phoneResolved = await resolveRecipientPhone({
       tenantId,
@@ -152,6 +168,13 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       }
       if (!tpl.provider_template_name) {
         return badRequest(res, 'Provider şablon adı eksik');
+      }
+      const tplWaba = String(tpl.provider_waba_id || '').trim();
+      if (connectionWabaId && tplWaba && tplWaba !== connectionWabaId) {
+        return badRequest(
+          res,
+          `Şablon başka WABA'ya ait (şablon=${tplWaba}, gönderici=${connectionWabaId})`
+        );
       }
       const rendered = renderTemplateContent({
         subject: '',

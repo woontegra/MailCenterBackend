@@ -614,6 +614,7 @@ export async function resolvePhoneNumberIdForWaba(params: {
   accessToken: string;
   wabaId: string;
   preferredPhoneNumberId?: string | null;
+  preferredDisplayPhone?: string | null;
   apiVersion?: string;
 }): Promise<{
   phoneNumberId: string;
@@ -635,6 +636,22 @@ export async function resolvePhoneNumberIdForWaba(params: {
   }
   const onBiz = numbers.find((n) => n.isOnBizApp === true);
   if (onBiz) return onBiz;
+
+  const preferredDigits = String(params.preferredDisplayPhone || '')
+    .replace(/\D/g, '')
+    .replace(/^0+/, '');
+  if (preferredDigits) {
+    const byDisplay = numbers.find((n) => {
+      const digits = String(n.displayPhoneNumber || '').replace(/\D/g, '');
+      return (
+        digits === preferredDigits ||
+        digits.endsWith(preferredDigits) ||
+        preferredDigits.endsWith(digits)
+      );
+    });
+    if (byDisplay) return byDisplay;
+  }
+
   if (numbers.length === 1) return numbers[0];
   throw Object.assign(
     new Error('WABA üzerinde birden fazla numara var; session phone_number_id gerekli'),

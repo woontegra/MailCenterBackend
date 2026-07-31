@@ -149,9 +149,17 @@ router.post(
       // Do NOT call the Cloud API register endpoint; number stays on WhatsApp Business app.
       if (!ids.phoneNumberId) {
         try {
+          const preferredDisplay =
+            String(
+              req.body?.preferredPhone ||
+                req.body?.preferred_phone ||
+                req.body?.businessPhone ||
+                ''
+            ).trim() || null;
           const resolved = await resolvePhoneNumberIdForWaba({
             accessToken,
             wabaId: ids.wabaId,
+            preferredDisplayPhone: preferredDisplay,
           });
           ids = { ...ids, phoneNumberId: resolved.phoneNumberId };
         } catch (err: any) {
@@ -208,16 +216,45 @@ router.post(
         phone.displayPhoneNumber ||
         `WhatsApp ${ids.phoneNumberId}`;
 
-      // Upsert: one WA connection per brand preferred
-      const existing = await query(
-        `SELECT id FROM channel_connections
+      // Upsert by phone_number_id — NEVER overwrite a different number (e.g. Meta test line)
+      // with a coexistence / real business number (or vice versa).
+      const existingByPhone = await query(
+        `SELECT id, settings FROM channel_connections
          WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP'
+           AND settings->>'phone_number_id' = $3
          ORDER BY id ASC LIMIT 1`,
-        [tenantId, brandId]
+        [tenantId, brandId, ids.phoneNumberId]
       );
 
+      let existingId: number | null = existingByPhone.rows[0]?.id
+        ? Number(existingByPhone.rows[0].id)
+        : null;
+
+      if (!existingId) {
+        // Same WABA + same normalized display phone, if phone_number_id was missing historically
+        const phoneDigits = String(phone.displayPhoneNumber || '').replace(/\D/g, '');
+        if (phoneDigits) {
+          const byDisplay = await query(
+            `SELECT id, settings FROM channel_connections
+             WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP'
+               AND regexp_replace(
+                     COALESCE(settings->>'business_phone_number', settings->>'business_phone', ''),
+                     '\\D', '', 'g'
+                   ) = $3
+             ORDER BY id ASC LIMIT 1`,
+            [tenantId, brandId, phoneDigits]
+          );
+          if (byDisplay.rows[0]?.id) {
+            const otherPnid = String(byDisplay.rows[0].settings?.phone_number_id || '').trim();
+            if (!otherPnid || otherPnid === ids.phoneNumberId) {
+              existingId = Number(byDisplay.rows[0].id);
+            }
+          }
+        }
+      }
+
       let saved;
-      if (existing.rows[0]?.id) {
+      if (existingId) {
         saved = await query(
           `UPDATE channel_connections
            SET provider = 'META_WHATSAPP_CLOUD',
@@ -229,17 +266,23 @@ router.post(
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $4 AND tenant_id = $5
            RETURNING *`,
-          [
-            displayName,
-            encrypted,
-            JSON.stringify(settings),
-            existing.rows[0].id,
-            tenantId,
-          ]
+          [displayName, encrypted, JSON.stringify(settings), existingId, tenantId]
         );
       } else {
         const { enforceCountQuota, afterCountResourceCreated } = await import('../utils/quotaGuards');
         if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
+
+        // Ensure unique display_name under (tenant, brand, channel_type, display_name)
+        let uniqueDisplay = displayName;
+        const nameClash = await query(
+          `SELECT id FROM channel_connections
+           WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP'
+             AND display_name = $3 LIMIT 1`,
+          [tenantId, brandId, uniqueDisplay]
+        );
+        if (nameClash.rows[0]) {
+          uniqueDisplay = `${displayName} (${ids.phoneNumberId.slice(-6)})`;
+        }
 
         saved = await query(
           `INSERT INTO channel_connections
@@ -247,7 +290,7 @@ router.post(
              encrypted_credentials, settings, last_tested_at)
            VALUES ($1,$2,'WHATSAPP','META_WHATSAPP_CLOUD',$3,'ACTIVE',$4,$5::jsonb,CURRENT_TIMESTAMP)
            RETURNING *`,
-          [tenantId, brandId, displayName, encrypted, JSON.stringify(settings)]
+          [tenantId, brandId, uniqueDisplay, encrypted, JSON.stringify(settings)]
         );
         await afterCountResourceCreated(tenantId);
       }

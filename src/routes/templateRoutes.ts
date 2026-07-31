@@ -29,7 +29,7 @@ router.use(authenticate);
 router.get('/', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
-    const { brand_id, channel_type, q } = req.query;
+    const { brand_id, channel_type, q, channel_connection_id, approval_status } = req.query;
     const params: unknown[] = [tenantId];
 
     let sql = `
@@ -50,6 +50,39 @@ router.get('/', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res
       }
       params.push(channel_type);
       sql += ` AND t.channel_type = $${params.length}`;
+    }
+
+    // Scope WhatsApp templates to the selected connection's WABA
+    if (channel_connection_id) {
+      const connectionId = Number(channel_connection_id);
+      if (!Number.isFinite(connectionId) || connectionId <= 0) {
+        return badRequest(res, 'Geçersiz channel_connection_id');
+      }
+      const conn = await query(
+        `SELECT id, brand_id, status, settings FROM channel_connections
+         WHERE id = $1 AND tenant_id = $2 AND channel_type = 'WHATSAPP'`,
+        [connectionId, tenantId]
+      );
+      if (!conn.rows[0]) return notFound(res, 'WhatsApp bağlantısı bulunamadı');
+      if (String(conn.rows[0].status).toUpperCase() !== 'ACTIVE') {
+        return badRequest(res, 'WhatsApp bağlantısı aktif değil');
+      }
+      let wabaId = '';
+      try {
+        wabaId = parseWhatsAppSettings(conn.rows[0].settings).wabaId;
+      } catch {
+        return badRequest(res, 'Bağlantıda waba_id eksik');
+      }
+      params.push(wabaId);
+      sql += ` AND t.provider_waba_id = $${params.length}`;
+      if (brand_id && Number(brand_id) !== Number(conn.rows[0].brand_id)) {
+        return badRequest(res, 'Şablon markası ile bağlantı markası uyuşmuyor');
+      }
+    }
+
+    if (approval_status) {
+      params.push(String(approval_status).toUpperCase());
+      sql += ` AND UPPER(COALESCE(t.provider_approval_status, '')) = $${params.length}`;
     }
     if (q && String(q).trim()) {
       params.push(`%${String(q).trim()}%`);

@@ -36,11 +36,44 @@ export function conflict(res: Response, error: string) {
 }
 
 export function sanitizeConnection<T extends Record<string, unknown>>(row: T) {
-  const { encrypted_credentials, ...rest } = row;
+  const { encrypted_credentials, ...rest } = row as T & { encrypted_credentials?: unknown };
+  const settings =
+    rest.settings && typeof rest.settings === 'object' && !Array.isArray(rest.settings)
+      ? (rest.settings as Record<string, unknown>)
+      : {};
+
+  const phone_number = String(
+    settings.business_phone_number ||
+      settings.business_phone ||
+      settings.display_phone_number ||
+      settings.phone_number ||
+      ''
+  ).trim() || null;
+  const phone_number_id = String(settings.phone_number_id || '').trim() || null;
+  const waba_id = String(settings.waba_id || '').trim() || null;
+  const connection_type = String(
+    settings.connection_type || settings.connection_method || ''
+  ).trim() || null;
+
   return {
     ...rest,
     has_credentials: Boolean(encrypted_credentials),
+    phone_number,
+    phone_number_id,
+    waba_id,
+    connection_type,
   };
+}
+
+/** Digits-only compare for Meta display phones (+90 532… vs +90532…). */
+export function whatsappPhoneDigits(value: unknown): string {
+  return String(value || '').replace(/\D/g, '');
+}
+
+export function isMetaTestWhatsAppPhone(value: unknown): boolean {
+  const d = whatsappPhoneDigits(value);
+  // Meta Cloud API test line used in review sandboxes
+  return d === '15551548955' || d.endsWith('5551548955');
 }
 
 export function canActivateChannel(params: {

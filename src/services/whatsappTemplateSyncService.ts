@@ -32,9 +32,10 @@ export async function syncWhatsAppTemplatesForConnection(params: {
   const connection = result.rows[0];
   const creds = unpackWhatsAppCredentials(connection.encrypted_credentials);
   const config = parseWhatsAppSettings(connection.settings);
+  const wabaId = config.wabaId;
   const remote = await fetchWabaMessageTemplates({
     accessToken: creds.accessToken,
-    wabaId: config.wabaId,
+    wabaId,
     apiVersion: config.apiVersion,
   });
 
@@ -53,8 +54,15 @@ export async function syncWhatsAppTemplatesForConnection(params: {
          AND channel_type = 'WHATSAPP'
          AND provider_template_name = $3
          AND provider_template_language = $4
+         AND (
+           provider_waba_id = $5
+           OR (provider_waba_id IS NULL AND $5::text IS NOT NULL)
+         )
+       ORDER BY
+         CASE WHEN provider_waba_id = $5 THEN 0 ELSE 1 END,
+         id ASC
        LIMIT 1`,
-      [params.tenantId, connection.brand_id, tpl.name, tpl.language]
+      [params.tenantId, connection.brand_id, tpl.name, tpl.language, wabaId]
     );
 
     const approval = mapMetaStatusToApproval(tpl.status);
@@ -68,6 +76,15 @@ export async function syncWhatsAppTemplatesForConnection(params: {
             .join('\n') || displayName
         : displayName;
 
+    const componentsJson = JSON.stringify({
+      meta_template_id: tpl.id,
+      category: tpl.category,
+      status: tpl.status,
+      components: tpl.components,
+      waba_id: wabaId,
+      last_synced_at: now.toISOString(),
+    });
+
     if (existing.rows[0]?.id) {
       await query(
         `UPDATE templates SET
@@ -75,19 +92,17 @@ export async function syncWhatsAppTemplatesForConnection(params: {
            plain_text_content = COALESCE(NULLIF(plain_text_content, ''), $2),
            provider_approval_status = $3,
            provider_template_components = $4::jsonb,
+           provider_waba_id = $5,
+           channel_connection_id = $6,
            updated_at = CURRENT_TIMESTAMP
-         WHERE id = $5 AND tenant_id = $6`,
+         WHERE id = $7 AND tenant_id = $8`,
         [
           displayName,
           bodyText,
           approval,
-          JSON.stringify({
-            meta_template_id: tpl.id,
-            category: tpl.category,
-            status: tpl.status,
-            components: tpl.components,
-            last_synced_at: now.toISOString(),
-          }),
+          componentsJson,
+          wabaId,
+          params.connectionId,
           existing.rows[0].id,
           params.tenantId,
         ]
@@ -97,9 +112,10 @@ export async function syncWhatsAppTemplatesForConnection(params: {
         `INSERT INTO templates (
            tenant_id, brand_id, name, content, channel_type, plain_text_content,
            provider_template_name, provider_template_language,
-           provider_approval_status, provider_template_components, is_active, is_draft
+           provider_approval_status, provider_template_components, is_active, is_draft,
+           provider_waba_id, channel_connection_id
          ) VALUES (
-           $1,$2,$3,$4,'WHATSAPP',$4,$5,$6,$7,$8::jsonb,true,false
+           $1,$2,$3,$4,'WHATSAPP',$4,$5,$6,$7,$8::jsonb,true,false,$9,$10
          )`,
         [
           params.tenantId,
@@ -109,13 +125,9 @@ export async function syncWhatsAppTemplatesForConnection(params: {
           tpl.name,
           tpl.language,
           approval,
-          JSON.stringify({
-            meta_template_id: tpl.id,
-            category: tpl.category,
-            status: tpl.status,
-            components: tpl.components,
-            last_synced_at: now.toISOString(),
-          }),
+          componentsJson,
+          wabaId,
+          params.connectionId,
         ]
       );
     }

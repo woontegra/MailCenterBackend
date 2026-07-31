@@ -4,6 +4,11 @@
  */
 import assert from 'assert';
 import { extractSignupIds } from '../services/metaEmbeddedSignupService';
+import {
+  isMetaTestWhatsAppPhone,
+  sanitizeConnection,
+  whatsappPhoneDigits,
+} from '../utils/channelPlatform';
 
 function main() {
   const standard = extractSignupIds({
@@ -34,6 +39,28 @@ function main() {
   );
   assert.strictEqual(coexistence.wabaId, 'WABA_ONLY');
   assert.strictEqual(coexistence.phoneNumberId, '');
+
+  assert.strictEqual(whatsappPhoneDigits('+90 532 317 17 55'), '905323171755');
+  assert.strictEqual(isMetaTestWhatsAppPhone('+1 555-154-8955'), true);
+  assert.strictEqual(isMetaTestWhatsAppPhone('+905323171755'), false);
+
+  const sanitized = sanitizeConnection({
+    id: 1,
+    channel_type: 'WHATSAPP',
+    encrypted_credentials: 'secret',
+    settings: {
+      business_phone_number: '+905323171755',
+      phone_number_id: 'PNID',
+      waba_id: 'WABA',
+      connection_type: 'WHATSAPP_BUSINESS_APP_ONBOARDING',
+    },
+  }) as any;
+  assert.strictEqual(sanitized.has_credentials, true);
+  assert.strictEqual(sanitized.phone_number, '+905323171755');
+  assert.strictEqual(sanitized.phone_number_id, 'PNID');
+  assert.strictEqual(sanitized.waba_id, 'WABA');
+  assert.strictEqual(sanitized.connection_type, 'WHATSAPP_BUSINESS_APP_ONBOARDING');
+  assert.strictEqual(sanitized.encrypted_credentials, undefined);
 
   console.log('whatsappCoexistenceChecks PASS');
 }
