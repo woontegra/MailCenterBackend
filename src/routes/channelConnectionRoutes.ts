@@ -28,6 +28,10 @@ import {
   getWhatsAppProviderAdapter,
   isSupportedWhatsAppProvider,
 } from '../whatsapp/whatsappProviderRegistry';
+import {
+  getMetaAppSecret,
+  getMetaWhatsAppWebhookVerifyToken,
+} from '../config/metaWhatsAppConfig';
 
 const router = Router();
 router.use(authenticate);
@@ -70,14 +74,42 @@ function resolveEncryptedCredentials(params: {
 
   if (isWaMeta) {
     if (params.isUpdate) {
+      const tokenIn =
+        params.access_token != null && String(params.access_token).trim() !== ''
+          ? String(params.access_token).trim()
+          : null;
+      const secretIn =
+        params.app_secret != null && String(params.app_secret).trim() !== ''
+          ? String(params.app_secret).trim()
+          : null;
+      const verifyIn =
+        params.webhook_verify_token != null &&
+        String(params.webhook_verify_token).trim() !== ''
+          ? String(params.webhook_verify_token).trim()
+          : null;
+      // Only fill platform secret/verify when refreshing with a new access token
       return mergeWhatsAppCredentialUpdate({
         existingEncrypted: params.existingEncrypted || null,
-        access_token: params.access_token as string | null | undefined,
-        app_secret: params.app_secret as string | null | undefined,
-        webhook_verify_token: params.webhook_verify_token as string | null | undefined,
+        access_token: tokenIn,
+        app_secret: secretIn || (tokenIn ? getMetaAppSecret() || null : null),
+        webhook_verify_token:
+          verifyIn || (tokenIn ? getMetaWhatsAppWebhookVerifyToken() || null : null),
       });
     }
     if (params.access_token || params.app_secret || params.webhook_verify_token) {
+      const accessToken = String(params.access_token || '').trim();
+      const appSecret =
+        String(params.app_secret || '').trim() || getMetaAppSecret();
+      const webhookVerify =
+        String(params.webhook_verify_token || '').trim() ||
+        getMetaWhatsAppWebhookVerifyToken();
+      if (accessToken && appSecret && webhookVerify) {
+        return packWhatsAppCredentials({
+          access_token: accessToken,
+          app_secret: appSecret,
+          webhook_verify_token: webhookVerify,
+        });
+      }
       return packWhatsAppCredentials({
         access_token: String(params.access_token || ''),
         app_secret: String(params.app_secret || ''),
@@ -270,6 +302,59 @@ router.post('/', requirePermission('CHANNEL_MANAGE'), async (req: AuthRequest, r
 
     if (status === 'ACTIVE' && !activation.ok) {
       return badRequest(res, activation.error || 'Cannot activate connection');
+    }
+
+    // WhatsApp Getting Started / token refresh: same phone_number_id → update existing
+    // connection (e.g. Meta Review test id=11) instead of creating a duplicate.
+    if (channel_type === 'WHATSAPP') {
+      let phoneNumberId = '';
+      try {
+        phoneNumberId = parseWhatsAppSettings(finalSettings).phoneNumberId;
+      } catch {
+        phoneNumberId = '';
+      }
+      if (phoneNumberId) {
+        const existing = await query(
+          `SELECT * FROM channel_connections
+           WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP'
+             AND (
+               settings->>'phone_number_id' = $3
+               OR settings->>'phoneNumberId' = $3
+             )
+           ORDER BY id ASC
+           LIMIT 1`,
+          [tenantId, brand_id, phoneNumberId]
+        );
+        if (existing.rows[0]) {
+          const current = existing.rows[0];
+          const mergedSettings = {
+            ...(typeof current.settings === 'object' && current.settings
+              ? current.settings
+              : {}),
+            ...(finalSettings || {}),
+          };
+          const updated = await query(
+            `UPDATE channel_connections
+             SET provider = $1, display_name = $2, status = $3,
+                 encrypted_credentials = COALESCE($4, encrypted_credentials),
+                 mail_account_id = $5, settings = $6::jsonb,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $7 AND tenant_id = $8
+             RETURNING *`,
+            [
+              finalProvider || current.provider,
+              String(display_name).trim(),
+              status,
+              encryptedCredentials,
+              mailAccountId,
+              JSON.stringify(mergedSettings),
+              current.id,
+              tenantId,
+            ]
+          );
+          return res.json(sanitizeConnection(updated.rows[0]));
+        }
+      }
     }
 
     const result = await query(

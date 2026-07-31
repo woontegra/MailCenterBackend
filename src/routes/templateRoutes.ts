@@ -73,8 +73,21 @@ router.get('/', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res
       } catch {
         return badRequest(res, 'Bağlantıda waba_id eksik');
       }
+      // Match templates already tagged with this WABA. Also include legacy Meta-synced
+      // rows (provider_template_name set, provider_waba_id still NULL) that belong to
+      // this brand/connection — do NOT invent fake local APPROVED templates.
       params.push(wabaId);
-      sql += ` AND t.provider_waba_id = $${params.length}`;
+      const wabaParam = params.length;
+      params.push(connectionId);
+      const connParam = params.length;
+      sql += ` AND (
+        t.provider_waba_id = $${wabaParam}
+        OR (
+          t.provider_waba_id IS NULL
+          AND NULLIF(TRIM(COALESCE(t.provider_template_name, '')), '') IS NOT NULL
+          AND (t.channel_connection_id IS NULL OR t.channel_connection_id = $${connParam})
+        )
+      )`;
       if (brand_id && Number(brand_id) !== Number(conn.rows[0].brand_id)) {
         return badRequest(res, 'Şablon markası ile bağlantı markası uyuşmuyor');
       }
