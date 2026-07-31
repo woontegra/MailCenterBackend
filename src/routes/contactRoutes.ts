@@ -48,11 +48,16 @@ async function getContactOr404(tenantId: number, contactId: number, res: Respons
   return result.rows[0];
 }
 
-async function assertBrandInTenant(tenantId: number, brandId: number): Promise<boolean> {
-  const result = await query(
-    `SELECT id FROM brands WHERE id = $1 AND tenant_id = $2`,
-    [brandId, tenantId]
-  );
+async function assertBrandInTenant(
+  tenantId: number,
+  brandId: number,
+  client?: { query: (text: string, params?: any[]) => Promise<any> }
+): Promise<boolean> {
+  const q = client ? client.query.bind(client) : query;
+  const result = await q(`SELECT id FROM brands WHERE id = $1 AND tenant_id = $2`, [
+    brandId,
+    tenantId,
+  ]);
   return result.rows.length > 0;
 }
 
@@ -440,7 +445,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       ? brand_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
       : [];
     for (const brandId of brandIds) {
-      const ok = await assertBrandInTenant(tenantId, brandId);
+      const ok = await assertBrandInTenant(tenantId, brandId, client);
       if (!ok) {
         await client.query('ROLLBACK');
         return notFound(res, 'Bu marka bulunamadı.');
