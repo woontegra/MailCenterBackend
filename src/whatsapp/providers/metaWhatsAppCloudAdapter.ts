@@ -104,13 +104,59 @@ function sanitizeUserMessage(msg: string): string {
   if (lower.includes('access token') || lower.includes('oauth') || lower.includes('session')) {
     return 'WhatsApp kimlik doğrulama hatası';
   }
-  if (lower.includes('template')) {
-    return 'WhatsApp şablon hatası';
-  }
   if (lower.includes('rate') || lower.includes('limit') || lower.includes('throttle')) {
     return 'WhatsApp hız sınırı aşıldı';
   }
   return msg.slice(0, 300) || 'WhatsApp işlemi başarısız';
+}
+
+/** UI-safe send failure: keeps Meta message + code, never tokens. */
+export function formatWhatsAppSendFailureMessage(data: any, status?: number): string {
+  const err = data?.error || data || {};
+  const code = err?.code != null ? err.code : status != null ? status : null;
+  const raw = String(err?.message || err?.error_user_msg || 'bilinmeyen Meta hatası')
+    .replace(/EAA[A-Za-z0-9]+/g, '[redacted]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .slice(0, 300);
+  const safe = sanitizeUserMessage(raw);
+  const codePart = code != null ? ` (kod: ${code})` : '';
+  return `WhatsApp mesajı gönderilemedi: ${safe}${codePart}`;
+}
+
+function logWhatsAppMessagesGraph(params: {
+  ok: boolean;
+  httpStatus: number;
+  phoneNumberId: string;
+  to?: string | null;
+  templateName?: string | null;
+  languageCode?: string | null;
+  messageId?: string | null;
+  data?: any;
+}): void {
+  if (params.ok) {
+    console.info('[meta-graph] messages POST ok', {
+      httpStatus: params.httpStatus,
+      phoneNumberId: params.phoneNumberId,
+      to: params.to || null,
+      templateName: params.templateName || null,
+      languageCode: params.languageCode || null,
+      messageId: params.messageId || null,
+    });
+    return;
+  }
+  const err = params.data?.error || {};
+  console.error('[meta-graph] messages POST failed', {
+    httpStatus: params.httpStatus,
+    phoneNumberId: params.phoneNumberId,
+    to: params.to || null,
+    templateName: params.templateName || null,
+    languageCode: params.languageCode || null,
+    message: err?.message != null ? String(err.message).slice(0, 300) : null,
+    type: err?.type != null ? String(err.type) : null,
+    code: err?.code != null ? err.code : null,
+    errorSubcode: err?.error_subcode != null ? err.error_subcode : null,
+    fbtraceId: err?.fbtrace_id != null ? String(err.fbtrace_id) : null,
+  });
 }
 
 export class MetaWhatsAppCloudAdapter implements WhatsAppProviderAdapter {
@@ -230,14 +276,19 @@ export class MetaWhatsAppCloudAdapter implements WhatsAppProviderAdapter {
       type: 'template',
       template,
     };
-    return this.postMessages(credentials, input.apiVersion, input.phoneNumberId, body);
+    return this.postMessages(credentials, input.apiVersion, input.phoneNumberId, body, {
+      to: input.toProviderNumber,
+      templateName: input.templateName,
+      languageCode: input.languageCode,
+    });
   }
 
   private async postMessages(
     credentials: WhatsAppCredentials,
     apiVersion: string,
     phoneNumberId: string,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
+    meta?: { to?: string; templateName?: string; languageCode?: string }
   ): Promise<WhatsAppNormalizedResponse> {
     try {
       const url = `${graphBase(apiVersion)}/${encodeURIComponent(phoneNumberId)}/messages`;
@@ -257,13 +308,35 @@ export class MetaWhatsAppCloudAdapter implements WhatsAppProviderAdapter {
       }
 
       const normalized = this.normalizeProviderResponse(data);
-      if (!normalized.success) {
-        throw Object.assign(new Error(normalized.safeMessage), {
-          code: normalized.code || 'WA_SEND_FAILED',
+      if (!normalized.success || !normalized.providerMessageId) {
+        const failMsg = data?.error
+          ? formatWhatsAppSendFailureMessage(data, response.status)
+          : normalized.safeMessage || 'WhatsApp yanıtında mesaj kimliği yok';
+        logWhatsAppMessagesGraph({
+          ok: false,
+          httpStatus: response.status,
+          phoneNumberId,
+          to: meta?.to,
+          templateName: meta?.templateName,
+          languageCode: meta?.languageCode,
+          data,
+        });
+        throw Object.assign(new Error(failMsg), {
+          code: normalized.code || data?.error?.code || 'WA_SEND_FAILED',
           status: response.status,
           graphError: data,
         });
       }
+
+      logWhatsAppMessagesGraph({
+        ok: true,
+        httpStatus: response.status,
+        phoneNumberId,
+        to: meta?.to,
+        templateName: meta?.templateName,
+        languageCode: meta?.languageCode,
+        messageId: normalized.providerMessageId,
+      });
       return normalized;
     } catch (error) {
       if ((error as any)?.code) throw error;

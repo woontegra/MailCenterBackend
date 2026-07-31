@@ -44,7 +44,7 @@ export async function syncWhatsAppTemplatesForConnection(params: {
 
   for (const tpl of remote) {
     if (!tpl.name || !tpl.language) continue;
-    if (tpl.status === 'APPROVED') approved += 1;
+    if (String(tpl.status).toUpperCase() === 'APPROVED') approved += 1;
 
     const existing = await query(
       `SELECT id FROM templates
@@ -126,7 +126,9 @@ export async function syncWhatsAppTemplatesForConnection(params: {
     ...(connection.settings || {}),
     templates_last_synced_at: now.toISOString(),
     approved_template_count: approved,
+    last_template_sync_error: null,
   };
+  // Never flip connection status to ERROR on template sync — keep ACTIVE / webhook as-is.
   await query(
     `UPDATE channel_connections
      SET settings = $1::jsonb, updated_at = CURRENT_TIMESTAMP

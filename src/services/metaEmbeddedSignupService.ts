@@ -363,28 +363,72 @@ export async function fetchWabaMessageTemplates(params: {
   let url: string | null =
     `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/message_templates` +
     `?limit=100&fields=id,name,language,status,category,components`;
+  let page = 0;
 
   while (url) {
-    const { ok, status, data } = await graphJson(url, {
+    page += 1;
+    const { ok, status, data, networkKind } = await graphJson(url, {
       headers: { Authorization: `Bearer ${params.accessToken}` },
     });
     if (!ok) {
+      const failure = extractMetaGraphFailure({
+        status,
+        data,
+        wabaId: params.wabaId,
+        graphVersion: version,
+        endpoint: `GET /${params.wabaId}/message_templates (page ${page})`,
+        networkKind,
+      });
+      logMetaGraphFailure('message_templates GET failed', failure);
       throw Object.assign(new Error(sanitizeGraphError(data, status) || 'Şablonlar alınamadı'), {
         code: 'TEMPLATE_SYNC_FAILED',
+        metaFailure: failure,
       });
     }
-    for (const row of data?.data || []) {
+
+    const pageRows = Array.isArray(data?.data) ? data.data : [];
+    const hasNext = Boolean(data?.paging?.next);
+    // Never log access tokens / Authorization / full paging URLs (may embed token).
+    console.info('[meta-graph] message_templates page', {
+      httpStatus: status,
+      wabaId: params.wabaId,
+      graphVersion: version,
+      page,
+      pageCount: pageRows.length,
+      pagingNext: hasNext,
+      templates: pageRows.map((row: any) => ({
+        name: String(row?.name || ''),
+        language: String(row?.language || ''),
+        status: String(row?.status || '').toUpperCase(),
+        category: row?.category != null ? String(row.category) : null,
+      })),
+    });
+
+    for (const row of pageRows) {
       templates.push({
         id: String(row.id || ''),
         name: String(row.name || ''),
         language: String(row.language || ''),
         category: row.category || null,
+        // Normalize early so callers never hit case-sensitive APPROVED checks.
         status: String(row.status || 'UNKNOWN').toUpperCase(),
         components: row.components || [],
       });
     }
-    url = data?.paging?.next || null;
+    // Follow Meta pagination until exhausted (no name allowlist).
+    url = hasNext ? String(data.paging.next) : null;
   }
+
+  console.info('[meta-graph] message_templates complete', {
+    wabaId: params.wabaId,
+    graphVersion: version,
+    total: templates.length,
+    approved: templates.filter((t) => t.status === 'APPROVED').length,
+    statuses: templates.reduce<Record<string, number>>((acc, t) => {
+      acc[t.status] = (acc[t.status] || 0) + 1;
+      return acc;
+    }, {}),
+  });
 
   return templates;
 }

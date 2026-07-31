@@ -30,6 +30,13 @@ const httpServer = createServer(app);
 const PORT = process.env.PORT || 5000;
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Railway (and similar) sit behind exactly one reverse proxy.
+// express-rate-limit requires trust proxy when X-Forwarded-For is present.
+// Use hop count 1 — never `true` (ERR_ERL_PERMISSIVE_TRUST_PROXY).
+if (isProduction) {
+  app.set('trust proxy', 1);
+}
+
 if (isProduction && !process.env.FRONTEND_URL) {
   throw new Error(
     'Configuration error: FRONTEND_URL must be set in production for secure CORS.'

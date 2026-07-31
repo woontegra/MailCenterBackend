@@ -31,6 +31,7 @@ import {
 } from '../whatsapp/whatsappCredentials';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
 import { getWhatsAppProviderAdapter } from '../whatsapp/whatsappProviderRegistry';
+import { formatWhatsAppSendFailureMessage } from '../whatsapp/providers/metaWhatsAppCloudAdapter';
 
 const router = Router();
 router.use(authenticate);
@@ -335,6 +336,30 @@ router.post(
       });
     } catch (err: any) {
       if (err.code === 'NOT_FOUND') return notFound(res);
+      // Persist sync error message without flipping connection to ERROR.
+      try {
+        const tenantId = req.user!.tenantId;
+        const id = Number(req.params.id);
+        const existing = await query(
+          `SELECT settings, status FROM channel_connections
+           WHERE id = $1 AND tenant_id = $2 AND channel_type = 'WHATSAPP'`,
+          [id, tenantId]
+        );
+        if (existing.rows[0]) {
+          const settings = {
+            ...(existing.rows[0].settings || {}),
+            last_template_sync_error: safeTemplateSyncError(err),
+          };
+          await query(
+            `UPDATE channel_connections
+             SET settings = $1::jsonb, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2 AND tenant_id = $3`,
+            [JSON.stringify(settings), id, tenantId]
+          );
+        }
+      } catch {
+        /* best-effort only */
+      }
       return badRequest(res, safeTemplateSyncError(err));
     }
   }
@@ -510,18 +535,32 @@ router.post(
       const adapter = getWhatsAppProviderAdapter(connection.provider);
 
       const digits = to.replace(/\D/g, '');
-      const send = await adapter.sendTemplateMessage(creds, {
-        toE164: to.startsWith('+') ? to : `+${digits}`,
-        toProviderNumber: digits,
-        phoneNumberId: config.phoneNumberId,
-        apiVersion: config.apiVersion,
-        templateName,
-        languageCode: language,
-        components,
-      });
+      let send;
+      try {
+        send = await adapter.sendTemplateMessage(creds, {
+          toE164: to.startsWith('+') ? to : `+${digits}`,
+          toProviderNumber: digits,
+          phoneNumberId: config.phoneNumberId,
+          apiVersion: config.apiVersion,
+          templateName,
+          languageCode: language,
+          components,
+        });
+      } catch (sendErr: any) {
+        const graphData = sendErr?.graphError;
+        const msg = graphData
+          ? formatWhatsAppSendFailureMessage(graphData, sendErr?.status)
+          : sanitizeErr(sendErr, 'WhatsApp mesajı gönderilemedi');
+        return badRequest(res, msg.startsWith('WhatsApp mesajı gönderilemedi:')
+          ? msg
+          : `WhatsApp mesajı gönderilemedi: ${msg}`);
+      }
 
       if (!send.success || !send.providerMessageId) {
-        return badRequest(res, send.safeMessage || 'Test mesajı gönderilemedi');
+        return badRequest(
+          res,
+          'WhatsApp mesajı gönderilemedi: Meta messages[0].id dönmedi'
+        );
       }
 
       const settings = {
