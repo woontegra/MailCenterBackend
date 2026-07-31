@@ -41,16 +41,129 @@ function sanitizeGraphError(data: any, status?: number): string {
   return msg;
 }
 
+export type MetaGraphFailureKind = 'http' | 'network' | 'timeout' | 'unknown';
+
+export type MetaGraphFailureInfo = {
+  kind: MetaGraphFailureKind;
+  httpStatus: number | null;
+  message: string;
+  type: string | null;
+  code: number | string | null;
+  errorSubcode: number | string | null;
+  fbtraceId: string | null;
+  wabaId: string | null;
+  graphVersion: string;
+  endpoint: string;
+};
+
+/** Safe Meta Graph failure details — never includes tokens/secrets. */
+export function extractMetaGraphFailure(params: {
+  status: number;
+  data: any;
+  wabaId?: string | null;
+  graphVersion: string;
+  endpoint: string;
+  networkKind?: MetaGraphFailureKind | null;
+}): MetaGraphFailureInfo {
+  const err = params.data?.error || {};
+  const kind: MetaGraphFailureKind =
+    params.networkKind === 'timeout' || params.networkKind === 'network'
+      ? params.networkKind
+      : params.status > 0
+        ? 'http'
+        : 'unknown';
+
+  const rawMessage =
+    kind === 'timeout'
+      ? 'Meta API zaman aşımı'
+      : kind === 'network'
+        ? String(err?.message || params.data?.error?.message || 'Meta API ağ hatası')
+        : String(err?.message || err?.error_user_msg || `Meta API hatası (${params.status || '?'})`);
+
+  return {
+    kind,
+    httpStatus: params.status > 0 ? params.status : null,
+    message: sanitizeGraphError({ error: { message: rawMessage } }, params.status),
+    type: err?.type != null ? String(err.type) : null,
+    code: err?.code != null ? err.code : null,
+    errorSubcode: err?.error_subcode != null ? err.error_subcode : null,
+    fbtraceId: err?.fbtrace_id != null ? String(err.fbtrace_id) : null,
+    wabaId: params.wabaId ? String(params.wabaId) : null,
+    graphVersion: params.graphVersion,
+    endpoint: params.endpoint,
+  };
+}
+
+export function logMetaGraphFailure(context: string, info: MetaGraphFailureInfo): void {
+  // Intentionally omit access tokens, app secrets, verify tokens, Authorization headers.
+  console.error('[meta-graph]', context, {
+    kind: info.kind,
+    httpStatus: info.httpStatus,
+    message: info.message,
+    type: info.type,
+    code: info.code,
+    errorSubcode: info.errorSubcode,
+    fbtraceId: info.fbtraceId,
+    wabaId: info.wabaId,
+    graphVersion: info.graphVersion,
+    endpoint: info.endpoint,
+  });
+}
+
+export function formatWebhookSubscribeFailureMessage(info: MetaGraphFailureInfo): string {
+  const codePart = info.code != null ? ` (kod: ${info.code})` : '';
+  return `Webhook aboneliği başarısız: ${info.message}${codePart}`;
+}
+
 async function graphJson(
   url: string,
-  init?: RequestInit
-): Promise<{ ok: boolean; status: number; data: any }> {
+  init?: RequestInit,
+  options?: { timeoutMs?: number }
+): Promise<{
+  ok: boolean;
+  status: number;
+  data: any;
+  networkKind: MetaGraphFailureKind | null;
+}> {
+  const timeoutMs = options?.timeoutMs ?? 20000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, init);
+    const res = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...(init?.headers || {}),
+      },
+    });
     const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, status: res.status, data };
-  } catch {
-    return { ok: false, status: 0, data: { error: { message: 'Meta API yanıt vermedi' } } };
+    return { ok: res.ok, status: res.status, data, networkKind: null };
+  } catch (err: any) {
+    const name = String(err?.name || '');
+    const msg = String(err?.message || '');
+    if (name === 'AbortError' || /aborted|timeout/i.test(msg)) {
+      return {
+        ok: false,
+        status: 0,
+        data: { error: { message: 'Meta API zaman aşımı' } },
+        networkKind: 'timeout',
+      };
+    }
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        error: {
+          message: sanitizeGraphError(
+            { error: { message: msg || 'Meta API yanıt vermedi' } },
+            0
+          ),
+        },
+      },
+      networkKind: 'network',
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -136,6 +249,7 @@ export async function fetchWabaProfile(params: {
 /**
  * Subscribe the Meta App to the WABA so webhooks are delivered.
  * Idempotent: already-subscribed returns success.
+ * On failure logs Meta error fields (never tokens/secrets) and throws a UI-safe message.
  */
 export async function subscribeAppToWaba(params: {
   accessToken: string;
@@ -143,8 +257,9 @@ export async function subscribeAppToWaba(params: {
   apiVersion?: string;
 }): Promise<{ subscribed: boolean; alreadySubscribed?: boolean }> {
   const version = params.apiVersion || getMetaGraphApiVersion();
+  const endpoint = `POST /${params.wabaId}/subscribed_apps`;
   const url = `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/subscribed_apps`;
-  const { ok, status, data } = await graphJson(url, {
+  const { ok, status, data, networkKind } = await graphJson(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${params.accessToken}`,
@@ -159,9 +274,55 @@ export async function subscribeAppToWaba(params: {
   if (msg.includes('already') || msg.includes('subscribed')) {
     return { subscribed: true, alreadySubscribed: true };
   }
-  throw Object.assign(new Error(sanitizeGraphError(data, status) || 'WABA webhook aboneliği başarısız'), {
-    code: 'WABA_SUBSCRIBE_FAILED',
+
+  const failure = extractMetaGraphFailure({
+    status,
+    data,
+    wabaId: params.wabaId,
+    graphVersion: version,
+    endpoint,
+    networkKind,
   });
+  logMetaGraphFailure('subscribed_apps POST failed', failure);
+  throw Object.assign(new Error(formatWebhookSubscribeFailureMessage(failure)), {
+    code: 'WABA_SUBSCRIBE_FAILED',
+    metaFailure: failure,
+  });
+}
+
+/**
+ * GET /{waba-id}/subscribed_apps and check whether our app id is present.
+ */
+export async function checkAppSubscribedToWaba(params: {
+  accessToken: string;
+  wabaId: string;
+  apiVersion?: string;
+}): Promise<{ subscribed: boolean; failure?: MetaGraphFailureInfo }> {
+  const version = params.apiVersion || getMetaGraphApiVersion();
+  const endpoint = `GET /${params.wabaId}/subscribed_apps`;
+  const url = `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/subscribed_apps`;
+  const { ok, status, data, networkKind } = await graphJson(url, {
+    headers: { Authorization: `Bearer ${params.accessToken}` },
+  });
+  const appId = getMetaAppId();
+  if (!ok) {
+    const failure = extractMetaGraphFailure({
+      status,
+      data,
+      wabaId: params.wabaId,
+      graphVersion: version,
+      endpoint,
+      networkKind,
+    });
+    logMetaGraphFailure('subscribed_apps GET failed', failure);
+    return { subscribed: false, failure };
+  }
+  const subscribed =
+    Array.isArray(data?.data) &&
+    data.data.some(
+      (row: any) => String(row.id || row.whatsapp_business_api_data?.id || '') === appId
+    );
+  return { subscribed: Boolean(subscribed) };
 }
 
 export async function unsubscribeAppFromWaba(params: {
@@ -361,22 +522,45 @@ export async function verifyConnectionAgainstMeta(params: {
   waba: MetaWabaProfile;
   subscribed: boolean;
   safeMessage: string;
+  subscribeAttempted: boolean;
 }> {
   const phone = await fetchPhoneNumberProfile(params);
   const waba = await fetchWabaProfile(params);
 
-  // Check subscribed_apps
-  const version = params.apiVersion || getMetaGraphApiVersion();
-  const url = `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/subscribed_apps`;
-  const { ok, data } = await graphJson(url, {
-    headers: { Authorization: `Bearer ${params.accessToken}` },
+  let subscribeAttempted = false;
+  let subscribeErrorMessage: string | null = null;
+
+  // Attempt POST /{WABA_ID}/subscribed_apps, then confirm with GET.
+  try {
+    subscribeAttempted = true;
+    await subscribeAppToWaba({
+      accessToken: params.accessToken,
+      wabaId: params.wabaId,
+      apiVersion: params.apiVersion,
+    });
+  } catch (err: any) {
+    subscribeErrorMessage =
+      String(err?.message || '').trim() ||
+      'Webhook aboneliği başarısız: bilinmeyen Meta hatası';
+  }
+
+  const check = await checkAppSubscribedToWaba({
+    accessToken: params.accessToken,
+    wabaId: params.wabaId,
+    apiVersion: params.apiVersion,
   });
-  const appId = getMetaAppId();
-  let subscribed = false;
-  if (ok && Array.isArray(data?.data)) {
-    subscribed = data.data.some(
-      (row: any) => String(row.id || row.whatsapp_business_api_data?.id || '') === appId
-    );
+
+  const subscribed = check.subscribed;
+  let safeMessage: string;
+  if (subscribed) {
+    safeMessage = 'Bağlantı doğrulandı; WABA aboneliği aktif';
+  } else if (subscribeErrorMessage) {
+    safeMessage = subscribeErrorMessage;
+  } else if (check.failure) {
+    safeMessage = formatWebhookSubscribeFailureMessage(check.failure);
+  } else {
+    safeMessage =
+      'Webhook aboneliği başarısız: uygulama WABA subscribed_apps listesinde görünmüyor';
   }
 
   return {
@@ -384,8 +568,7 @@ export async function verifyConnectionAgainstMeta(params: {
     phone,
     waba,
     subscribed,
-    safeMessage: subscribed
-      ? 'Bağlantı doğrulandı; WABA aboneliği aktif'
-      : 'Bağlantı doğrulandı; WABA webhook aboneliği eksik olabilir',
+    safeMessage,
+    subscribeAttempted,
   };
 }

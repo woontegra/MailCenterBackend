@@ -375,7 +375,7 @@ router.post(
           verification.phone.displayPhoneNumber || connection.settings?.business_phone_number,
         waba_name: verification.waba.name,
         webhook_status: verification.subscribed ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
-        last_error: verification.subscribed ? null : 'WABA webhook aboneliği eksik',
+        last_error: verification.subscribed ? null : verification.safeMessage,
       };
 
       await query(
@@ -389,7 +389,7 @@ router.post(
       );
 
       res.json({
-        success: verification.ok,
+        success: verification.ok && verification.subscribed,
         subscribed: verification.subscribed,
         message: verification.safeMessage,
         phone: {
