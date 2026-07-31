@@ -6,7 +6,7 @@ import {
 import { unpackWhatsAppCredentials, parseWhatsAppSettings } from '../whatsapp/whatsappCredentials';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
 
-function mapMetaStatusToApproval(status: string): string {
+export function mapMetaStatusToApproval(status: string): string {
   const s = String(status || '').toUpperCase();
   if (s === 'APPROVED') return 'APPROVED';
   if (s === 'REJECTED' || s === 'DISABLED') return 'REJECTED';

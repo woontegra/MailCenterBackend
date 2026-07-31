@@ -14,6 +14,14 @@ import {
   EditorDocument,
   hasRequiredBulkBlocks,
 } from '../utils/emailBlockCompiler';
+import { createWabaMessageTemplate } from '../services/metaEmbeddedSignupService';
+import { unpackWhatsAppCredentials, parseWhatsAppSettings } from '../whatsapp/whatsappCredentials';
+import {
+  isValidWhatsAppTemplateName,
+  isWhatsAppTemplateCategory,
+  normalizeWhatsAppTemplateName,
+} from '../utils/whatsappTemplateName';
+import { mapMetaStatusToApproval } from '../services/whatsappTemplateSyncService';
 
 const router = Router();
 router.use(authenticate);
@@ -212,12 +220,16 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
       return badRequest(res, 'Invalid channel_type');
     }
 
-    const approval = String(provider_approval_status || 'UNKNOWN').toUpperCase();
-    if (!['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED'].includes(approval)) {
-      return badRequest(res, 'Invalid provider_approval_status');
+    const isWhatsApp = String(finalChannelType || '').toUpperCase() === 'WHATSAPP';
+
+    // WhatsApp: approval status is owned by Meta — ignore client-provided APPROVED/REJECTED.
+    let approval = 'UNKNOWN';
+    if (!isWhatsApp) {
+      approval = String(provider_approval_status || 'UNKNOWN').toUpperCase();
+      if (!['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED'].includes(approval)) {
+        return badRequest(res, 'Invalid provider_approval_status');
+      }
     }
-    // Never auto-approve from client for WhatsApp without explicit APPROVED value from operator
-    // (operator may set APPROVED only after Meta console confirmation)
 
     if (brand_id) {
       const brand = await query(`SELECT id FROM brands WHERE id = $1 AND tenant_id = $2`, [
@@ -255,6 +267,106 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
           ? variables
           : [];
 
+    let metaTemplateId: string | null = null;
+    let metaCategory: string | null = null;
+    let providerName: string | null = provider_template_name || null;
+    let providerLanguage: string | null = provider_template_language || null;
+    let componentsPayload: unknown = provider_template_components || [];
+
+    if (String(finalChannelType || '').toUpperCase() === 'WHATSAPP') {
+      if (!brand_id) {
+        return badRequest(res, 'WhatsApp şablonu için marka (brand_id) zorunludur');
+      }
+      const categoryRaw = String(
+        req.body?.category || req.body?.provider_template_category || ''
+      ).trim();
+      if (!isWhatsAppTemplateCategory(categoryRaw)) {
+        return badRequest(
+          res,
+          'WhatsApp kategori zorunludur (UTILITY, MARKETING veya AUTHENTICATION)'
+        );
+      }
+      const category = categoryRaw.toUpperCase();
+      const bodyText = String(
+        built.plainText || plain_text_content || content || ''
+      ).trim();
+      if (!bodyText) {
+        return badRequest(res, 'WhatsApp şablon gövde metni zorunludur');
+      }
+
+      providerName = normalizeWhatsAppTemplateName(
+        String(provider_template_name || name || '')
+      );
+      if (!isValidWhatsAppTemplateName(providerName)) {
+        return badRequest(
+          res,
+          'Provider template adı geçersiz (küçük harf, a-z, 0-9, alt çizgi)'
+        );
+      }
+      providerLanguage = String(provider_template_language || 'tr').trim().toLowerCase() || 'tr';
+
+      const channelConnectionId = Number(
+        req.body?.channelConnectionId || req.body?.channel_connection_id || ''
+      );
+      if (!channelConnectionId || Number.isNaN(channelConnectionId)) {
+        return badRequest(res, 'WhatsApp hesabı (channelConnectionId) zorunludur');
+      }
+
+      const connectionResult = await query(
+        `SELECT * FROM channel_connections
+         WHERE id = $1
+           AND tenant_id = $2
+           AND brand_id = $3
+           AND channel_type = 'WHATSAPP'
+           AND status = 'ACTIVE'`,
+        [channelConnectionId, tenantId, brand_id]
+      );
+      if (connectionResult.rows.length === 0) {
+        return badRequest(
+          res,
+          'Seçilen WhatsApp kanalı bulunamadı, pasif veya bu markaya ait değil'
+        );
+      }
+      const connection = connectionResult.rows[0];
+      const creds = unpackWhatsAppCredentials(connection.encrypted_credentials);
+      const config = parseWhatsAppSettings(connection.settings);
+      if (!config.wabaId || !creds.accessToken) {
+        return badRequest(res, 'WhatsApp bağlantı kimlik bilgileri eksik');
+      }
+
+      let created;
+      try {
+        created = await createWabaMessageTemplate({
+          accessToken: creds.accessToken,
+          wabaId: config.wabaId,
+          name: providerName,
+          language: providerLanguage,
+          category,
+          bodyText,
+          apiVersion: config.apiVersion,
+        });
+      } catch (metaErr: any) {
+        // Do not create a local row when Meta rejects the template.
+        return badRequest(
+          res,
+          String(metaErr?.message || 'WhatsApp şablonu oluşturulamadı')
+        );
+      }
+
+      metaTemplateId = created.id;
+      metaCategory = created.category || category;
+      approval = mapMetaStatusToApproval(created.status || 'PENDING');
+      if (approval === 'UNKNOWN') approval = 'PENDING';
+      componentsPayload = {
+        meta_template_id: metaTemplateId,
+        category: metaCategory,
+        status: String(created.status || 'PENDING').toUpperCase(),
+        components: [{ type: 'BODY', text: bodyText }],
+        created_via: 'META_GRAPH',
+        last_synced_at: new Date().toISOString(),
+      };
+    }
+
     const result = await query(
       `INSERT INTO templates
         (name, content, tenant_id, created_by, is_shared, brand_id, channel_type,
@@ -280,12 +392,12 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
         description || null,
         preheader || null,
         built.editorJson ? JSON.stringify(built.editorJson) : null,
-        Boolean(is_draft),
+        String(finalChannelType || '').toUpperCase() === 'WHATSAPP' ? false : Boolean(is_draft),
         kind,
-        provider_template_name || null,
-        provider_template_language || null,
+        providerName,
+        providerLanguage,
         approval,
-        JSON.stringify(provider_template_components || []),
+        JSON.stringify(componentsPayload || []),
       ]
     );
 
@@ -431,11 +543,6 @@ async function updateTemplate(req: AuthRequest, res: Response) {
       return badRequest(res, 'Invalid channel_type');
     }
 
-    const approval = String(provider_approval_status || 'UNKNOWN').toUpperCase();
-    if (!['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED'].includes(approval)) {
-      return badRequest(res, 'Invalid provider_approval_status');
-    }
-
     if (brand_id) {
       const brand = await query(`SELECT id FROM brands WHERE id = $1 AND tenant_id = $2`, [
         brand_id,
@@ -456,6 +563,15 @@ async function updateTemplate(req: AuthRequest, res: Response) {
         return badRequest(res, 'sender_identity_id does not belong to the selected brand');
       }
       finalChannelType = sender.rows[0].channel_type;
+    }
+
+    // WhatsApp approval is Meta-owned; never accept client-set APPROVED/REJECTED on update.
+    const approval =
+      String(finalChannelType || '').toUpperCase() === 'WHATSAPP'
+        ? String(current.provider_approval_status || 'PENDING').toUpperCase()
+        : String(provider_approval_status || 'UNKNOWN').toUpperCase();
+    if (!['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED'].includes(approval)) {
+      return badRequest(res, 'Invalid provider_approval_status');
     }
 
     const subjectCheck = validateTemplateSubject(finalChannelType, subject);

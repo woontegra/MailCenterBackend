@@ -353,6 +353,93 @@ export type MetaMessageTemplate = {
   components: unknown;
 };
 
+export type MetaCreatedMessageTemplate = {
+  id: string;
+  status: string;
+  category: string | null;
+};
+
+/**
+ * Create a message template on the WABA via Meta Graph API.
+ * POST /{WABA_ID}/message_templates
+ */
+export async function createWabaMessageTemplate(params: {
+  accessToken: string;
+  wabaId: string;
+  name: string;
+  language: string;
+  category: string;
+  bodyText: string;
+  apiVersion?: string;
+}): Promise<MetaCreatedMessageTemplate> {
+  const version = params.apiVersion || getMetaGraphApiVersion();
+  const endpoint = `POST /${params.wabaId}/message_templates`;
+  const url = `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/message_templates`;
+  const payload = {
+    name: params.name,
+    language: params.language,
+    category: String(params.category).toUpperCase(),
+    components: [
+      {
+        type: 'BODY',
+        text: params.bodyText,
+      },
+    ],
+  };
+
+  const { ok, status, data, networkKind } = await graphJson(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!ok || data?.error) {
+    const failure = extractMetaGraphFailure({
+      status,
+      data,
+      wabaId: params.wabaId,
+      graphVersion: version,
+      endpoint,
+      networkKind,
+    });
+    logMetaGraphFailure('message_templates POST failed', failure);
+    const codePart = failure.code != null ? ` (kod: ${failure.code})` : '';
+    throw Object.assign(
+      new Error(`WhatsApp şablonu oluşturulamadı: ${failure.message}${codePart}`),
+      { code: 'TEMPLATE_CREATE_FAILED', metaFailure: failure }
+    );
+  }
+
+  const id = String(data?.id || '').trim();
+  const returnedStatus = String(data?.status || 'PENDING').toUpperCase();
+  console.info('[meta-graph] message_templates POST ok', {
+    httpStatus: status,
+    wabaId: params.wabaId,
+    graphVersion: version,
+    templateId: id || null,
+    name: params.name,
+    language: params.language,
+    category: payload.category,
+    status: returnedStatus,
+  });
+
+  if (!id) {
+    throw Object.assign(
+      new Error('WhatsApp şablonu oluşturulamadı: Meta template id dönmedi'),
+      { code: 'TEMPLATE_CREATE_NO_ID' }
+    );
+  }
+
+  return {
+    id,
+    status: returnedStatus || 'PENDING',
+    category: data?.category ? String(data.category).toUpperCase() : payload.category,
+  };
+}
+
 export async function fetchWabaMessageTemplates(params: {
   accessToken: string;
   wabaId: string;
