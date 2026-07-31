@@ -15,6 +15,7 @@ import {
   fetchPhoneNumberProfile,
   fetchWabaProfile,
   packPlatformWhatsAppCredentials,
+  resolvePhoneNumberIdForWaba,
   subscribeAppToWaba,
   unsubscribeAppFromWaba,
   verifyConnectionAgainstMeta,
@@ -80,6 +81,20 @@ router.post(
         req.body?.authorizationCode || req.body?.authorization_code || ''
       ).trim();
       const sessionRaw = req.body?.sessionInfo || req.body?.session_info || req.body?.metaSession || null;
+      const onboardingModeRaw = String(
+        req.body?.onboardingMode || req.body?.onboarding_mode || req.body?.connectionType || ''
+      )
+        .trim()
+        .toUpperCase();
+      const isCoexistenceOnboarding =
+        onboardingModeRaw === 'WHATSAPP_BUSINESS_APP_ONBOARDING' ||
+        onboardingModeRaw === 'COEXISTENCE' ||
+        String(sessionRaw?.event || '')
+          .toUpperCase()
+          .includes('WHATSAPP_BUSINESS_APP_ONBOARDING');
+      const connectionType = isCoexistenceOnboarding
+        ? 'WHATSAPP_BUSINESS_APP_ONBOARDING'
+        : 'STANDARD_EMBEDDED_SIGNUP';
 
       if (!brandId || Number.isNaN(brandId)) {
         return badRequest(res, 'brandId gerekli');
@@ -96,17 +111,26 @@ router.post(
 
       let session: MetaSignupSessionInfo = {};
       if (sessionRaw && typeof sessionRaw === 'object') {
+        const nested =
+          sessionRaw.data && typeof sessionRaw.data === 'object' ? sessionRaw.data : {};
         session = {
-          wabaId: sessionRaw.wabaId || sessionRaw.waba_id || null,
-          phoneNumberId: sessionRaw.phoneNumberId || sessionRaw.phone_number_id || null,
-          businessId: sessionRaw.businessId || sessionRaw.business_id || null,
+          wabaId: sessionRaw.wabaId || sessionRaw.waba_id || nested.waba_id || null,
+          phoneNumberId:
+            sessionRaw.phoneNumberId ||
+            sessionRaw.phone_number_id ||
+            nested.phone_number_id ||
+            null,
+          businessId:
+            sessionRaw.businessId || sessionRaw.business_id || nested.business_id || null,
           raw: sessionRaw,
         };
       }
 
       let ids;
       try {
-        ids = extractSignupIds(session);
+        ids = extractSignupIds(session, {
+          allowMissingPhoneNumberId: isCoexistenceOnboarding,
+        });
       } catch (err: any) {
         return badRequest(res, sanitizeErr(err, 'Meta oturum bilgileri eksik'));
       }
@@ -118,6 +142,20 @@ router.post(
         accessToken = exchanged.accessToken;
       } catch (err: any) {
         return badRequest(res, sanitizeErr(err, 'Authorization code işlenemedi'));
+      }
+
+      // Coexistence FINISH often returns only waba_id — resolve phone number via Graph.
+      // Do NOT call the Cloud API register endpoint; number stays on WhatsApp Business app.
+      if (!ids.phoneNumberId) {
+        try {
+          const resolved = await resolvePhoneNumberIdForWaba({
+            accessToken,
+            wabaId: ids.wabaId,
+          });
+          ids = { ...ids, phoneNumberId: resolved.phoneNumberId };
+        } catch (err: any) {
+          return badRequest(res, sanitizeErr(err, 'Coexistence telefon numarası çözülemedi'));
+        }
       }
 
       let phone;
@@ -157,6 +195,8 @@ router.post(
         api_version: apiVersion,
         webhook_status: 'SUBSCRIBED',
         connection_method: 'EMBEDDED_SIGNUP',
+        connection_type: connectionType,
+        coexistence: isCoexistenceOnboarding,
         last_inbound_at: null,
         last_outbound_at: null,
         last_error: null,
@@ -249,6 +289,8 @@ router.post(
       return res.status(201).json({
         success: true,
         connection: sanitizeConnection(connection),
+        connectionType,
+        coexistence: isCoexistenceOnboarding,
         phone: {
           phoneNumberId: phone.phoneNumberId,
           displayPhoneNumber: phone.displayPhoneNumber,

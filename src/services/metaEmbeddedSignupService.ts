@@ -236,7 +236,10 @@ export function packPlatformWhatsAppCredentials(accessToken: string): string {
   });
 }
 
-export function extractSignupIds(session: MetaSignupSessionInfo | null | undefined): {
+export function extractSignupIds(
+  session: MetaSignupSessionInfo | null | undefined,
+  options?: { allowMissingPhoneNumberId?: boolean }
+): {
   wabaId: string;
   phoneNumberId: string;
   businessId: string | null;
@@ -262,13 +265,89 @@ export function extractSignupIds(session: MetaSignupSessionInfo | null | undefin
       session?.businessId || data?.business_id || data?.businessId || raw?.business_id || ''
     ).trim() || null;
 
-  if (!wabaId || !phoneNumberId) {
+  if (!wabaId) {
+    throw Object.assign(new Error('Meta oturumunda WABA ID eksik'), {
+      code: 'MISSING_SIGNUP_IDS',
+    });
+  }
+  if (!phoneNumberId && !options?.allowMissingPhoneNumberId) {
     throw Object.assign(
       new Error('Meta oturumunda WABA ID veya Phone Number ID eksik'),
       { code: 'MISSING_SIGNUP_IDS' }
     );
   }
   return { wabaId, phoneNumberId, businessId };
+}
+
+/**
+ * List phone numbers on a WABA. Used when coexistence FINISH only returns waba_id.
+ */
+export async function listWabaPhoneNumbers(params: {
+  accessToken: string;
+  wabaId: string;
+  apiVersion?: string;
+}): Promise<
+  Array<{
+    phoneNumberId: string;
+    displayPhoneNumber: string | null;
+    verifiedName: string | null;
+    isOnBizApp: boolean | null;
+    platformType: string | null;
+  }>
+> {
+  const version = params.apiVersion || getMetaGraphApiVersion();
+  const fields = 'id,display_phone_number,verified_name,is_on_biz_app,platform_type';
+  const url =
+    `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/phone_numbers` +
+    `?fields=${fields}&limit=50`;
+  const { ok, status, data } = await graphJson(url, {
+    headers: { Authorization: `Bearer ${params.accessToken}` },
+  });
+  if (!ok) {
+    throw Object.assign(
+      new Error(sanitizeGraphError(data, status) || 'WABA telefon numaraları alınamadı'),
+      { code: 'WABA_PHONE_LIST_FAILED' }
+    );
+  }
+  return (data?.data || []).map((row: any) => ({
+    phoneNumberId: String(row.id || '').trim(),
+    displayPhoneNumber: row.display_phone_number || null,
+    verifiedName: row.verified_name || null,
+    isOnBizApp: typeof row.is_on_biz_app === 'boolean' ? row.is_on_biz_app : null,
+    platformType: row.platform_type ? String(row.platform_type) : null,
+  })).filter((row: { phoneNumberId: string }) => Boolean(row.phoneNumberId));
+}
+
+export async function resolvePhoneNumberIdForWaba(params: {
+  accessToken: string;
+  wabaId: string;
+  preferredPhoneNumberId?: string | null;
+  apiVersion?: string;
+}): Promise<{
+  phoneNumberId: string;
+  displayPhoneNumber: string | null;
+  verifiedName: string | null;
+  isOnBizApp: boolean | null;
+  platformType: string | null;
+}> {
+  const numbers = await listWabaPhoneNumbers(params);
+  if (numbers.length === 0) {
+    throw Object.assign(new Error('WABA üzerinde telefon numarası bulunamadı'), {
+      code: 'WABA_PHONE_EMPTY',
+    });
+  }
+  const preferred = String(params.preferredPhoneNumberId || '').trim();
+  if (preferred) {
+    const match = numbers.find((n) => n.phoneNumberId === preferred);
+    if (match) return match;
+  }
+  const onBiz = numbers.find((n) => n.isOnBizApp === true);
+  if (onBiz) return onBiz;
+  if (numbers.length === 1) return numbers[0];
+  throw Object.assign(
+    new Error('WABA üzerinde birden fazla numara var; session phone_number_id gerekli'),
+    { code: 'WABA_PHONE_AMBIGUOUS' }
+  );
 }
 
 export async function verifyConnectionAgainstMeta(params: {
