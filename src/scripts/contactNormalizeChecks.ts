@@ -23,6 +23,12 @@ assert(!phoneNoCc.ok, 'no invented country code');
 const phoneWithCc = normalizePhone({ value: '05321112233', countryCode: '90' });
 assert(phoneWithCc.ok && phoneWithCc.normalized === '+905321112233', 'national + tenant cc');
 
+const phoneDoubleCc = normalizePhone({ value: '905323171755', countryCode: '90' });
+assert(phoneDoubleCc.ok && phoneDoubleCc.normalized === '+905323171755', 'strips duplicate country code');
+
+const phoneSpaces = normalizePhone({ value: '90 532 317 17 55', countryCode: '90' });
+assert(phoneSpaces.ok && phoneSpaces.normalized === '+905323171755', 'spaces + duplicate cc');
+
 const phoneBad = normalizePhone({ value: '123', countryCode: '90' });
 assert(!phoneBad.ok, 'short phone rejected');
 

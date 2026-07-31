@@ -23,8 +23,8 @@ export function slugify(input: string): string {
     .slice(0, 100);
 }
 
-export function notFound(res: Response) {
-  return res.status(404).json({ error: 'Not found' });
+export function notFound(res: Response, error = 'Not found') {
+  return res.status(404).json({ error });
 }
 
 export function badRequest(res: Response, error: string) {

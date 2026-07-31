@@ -7,7 +7,7 @@ export function normalizeEmail(value: string): { ok: true; value: string; normal
   const raw = String(value || '').trim();
   if (!raw) return { ok: false, error: 'E-posta adresi gerekli' };
   const normalized = raw.toLowerCase();
-  if (!EMAIL_RE.test(normalized)) return { ok: false, error: 'Geçersiz e-posta adresi' };
+  if (!EMAIL_RE.test(normalized)) return { ok: false, error: 'E-posta adresi geçersiz.' };
   if (normalized.length > 320) return { ok: false, error: 'E-posta adresi çok uzun' };
   return { ok: true, value: raw, normalized };
 }
@@ -48,27 +48,36 @@ export function normalizePhone(params: {
   if (raw.startsWith('+')) {
     const digits = raw.slice(1).replace(/\D/g, '');
     if (digits.length < 8 || digits.length > 15) {
-      return { ok: false, error: 'Geçersiz uluslararası telefon numarası' };
+      return { ok: false, error: 'Telefon numarası geçersiz.' };
     }
     return { ok: true, value: `+${digits}`, normalized: `+${digits}` };
   }
 
   const national = raw.replace(/\D/g, '');
-  if (!national) return { ok: false, error: 'Geçersiz telefon numarası' };
+  if (!national) return { ok: false, error: 'Telefon numarası geçersiz.' };
 
   const cc = String(params.countryCode || '').replace(/\D/g, '');
   if (!cc) {
     return {
       ok: false,
-      error: 'Telefon için ülke kodu gerekli (+E.164 veya country_code / tenant ayarı)',
+      error: 'Telefon numarası geçersiz.',
     };
   }
 
   let local = national;
   if (local.startsWith('0')) local = local.slice(1);
+
+  // Strip accidental duplicate country code (e.g. value "905323171755" + cc "90")
+  if (cc && local.startsWith(cc) && local.length > cc.length) {
+    const withoutCc = local.slice(cc.length);
+    if (withoutCc.length >= 7 && `${cc}${withoutCc}`.length <= 15) {
+      local = withoutCc;
+    }
+  }
+
   const combined = `${cc}${local}`;
   if (combined.length < 8 || combined.length > 15) {
-    return { ok: false, error: 'Geçersiz telefon numarası' };
+    return { ok: false, error: 'Telefon numarası geçersiz.' };
   }
 
   return { ok: true, value: `+${combined}`, normalized: `+${combined}` };

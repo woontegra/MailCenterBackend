@@ -179,8 +179,10 @@ async function upsertPreference(params: {
   note?: string | null;
   userId: number;
   force?: boolean;
+  client?: any;
 }) {
-  const existing = await query(
+  const q = params.client ? params.client.query.bind(params.client) : query;
+  const existing = await q(
     params.brandId == null
       ? `SELECT * FROM communication_preferences
          WHERE tenant_id = $1 AND contact_id = $2 AND channel_type = $3 AND brand_id IS NULL`
@@ -210,7 +212,7 @@ async function upsertPreference(params: {
 
   let row;
   if (existing.rows[0]) {
-    const updated = await query(
+    const updated = await q(
       `UPDATE communication_preferences
        SET status = $1, source = $2, updated_by = $3, updated_at = CURRENT_TIMESTAMP
        WHERE id = $4 AND tenant_id = $5
@@ -219,7 +221,7 @@ async function upsertPreference(params: {
     );
     row = updated.rows[0];
   } else {
-    const inserted = await query(
+    const inserted = await q(
       `INSERT INTO communication_preferences
          (tenant_id, contact_id, brand_id, channel_type, status, source, updated_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -237,7 +239,7 @@ async function upsertPreference(params: {
     row = inserted.rows[0];
   }
 
-  await query(
+  await q(
     `INSERT INTO consent_events
        (tenant_id, contact_id, brand_id, channel_type, previous_status, new_status, source, note, created_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -396,6 +398,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       brand_ids = [],
       contact_points = [],
       country_code,
+      whatsapp_opt_in,
+      whatsapp_consent,
     } = req.body || {};
 
     if (status && !CONTACT_STATUSES.has(String(status).toUpperCase())) {
@@ -406,6 +410,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     const lastName = last_name ? String(last_name).trim() : null;
     const companyName = company_name ? String(company_name).trim() : null;
     const pointsInput = Array.isArray(contact_points) ? contact_points : [];
+    const whatsappOptIn = Boolean(whatsapp_opt_in ?? whatsapp_consent);
 
     if (!firstName && !companyName && pointsInput.length === 0) {
       return badRequest(res, 'En az bir ad, şirket adı veya iletişim noktası gerekli');
@@ -432,13 +437,13 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     const contact = contactIns.rows[0];
 
     const brandIds: number[] = Array.isArray(brand_ids)
-      ? brand_ids.map(Number).filter((n) => Number.isFinite(n))
+      ? brand_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
       : [];
     for (const brandId of brandIds) {
       const ok = await assertBrandInTenant(tenantId, brandId);
       if (!ok) {
         await client.query('ROLLBACK');
-        return notFound(res);
+        return notFound(res, 'Bu marka bulunamadı.');
       }
       await client.query(
         `INSERT INTO contact_brand_links (tenant_id, contact_id, brand_id)
@@ -455,15 +460,34 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         await client.query('ROLLBACK');
         return badRequest(res, 'Geçersiz kanal türü');
       }
+      const pointValue = raw.value == null ? '' : String(raw.value);
+      if (channelType === 'EMAIL' && !pointValue.trim()) {
+        // Optional empty email — skip rather than 400
+        continue;
+      }
       const normalized = await normalizeContactPointValue({
         tenantId,
         channelType: channelType as any,
-        value: raw.value,
+        value: pointValue,
         countryCode: raw.country_code || country_code || null,
       });
       if (!normalized.ok) {
         await client.query('ROLLBACK');
         return badRequest(res, normalized.ok === false ? normalized.error : 'Geçersiz iletişim');
+      }
+
+      const dup = await client.query(
+        `SELECT id FROM contact_points
+         WHERE tenant_id = $1 AND channel_type = $2 AND normalized_value = $3 AND is_active = true
+         LIMIT 1`,
+        [tenantId, channelType, normalized.normalized]
+      );
+      if (dup.rows.length > 0) {
+        await client.query('ROLLBACK');
+        if (channelType === 'EMAIL') {
+          return conflict(res, 'Bu e-posta adresi zaten kayıtlı.');
+        }
+        return conflict(res, 'Bu telefon numarası zaten kayıtlı.');
       }
 
       let isPrimary = Boolean(raw.is_primary ?? raw.isPrimary);
@@ -488,7 +512,10 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       } catch (err: any) {
         await client.query('ROLLBACK');
         if (err.code === '23505') {
-          return conflict(res, 'Bu iletişim adresi bu tenant içinde zaten kayıtlı');
+          if (channelType === 'EMAIL') {
+            return conflict(res, 'Bu e-posta adresi zaten kayıtlı.');
+          }
+          return conflict(res, 'Bu telefon numarası zaten kayıtlı.');
         }
         throw err;
       }
@@ -497,6 +524,21 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     // Ensure one primary per channel if any points exist
     for (const ch of CHANNELS) {
       await ensurePrimaryAfterDelete(client, tenantId, contact.id, ch);
+    }
+
+    if (whatsappOptIn) {
+      await upsertPreference({
+        tenantId,
+        contactId: contact.id,
+        brandId: null,
+        channelType: 'WHATSAPP',
+        newStatus: 'OPTED_IN',
+        source: 'user_explicit',
+        note: 'Kişi oluşturma formunda WhatsApp izni verildi',
+        userId,
+        force: true,
+        client,
+      });
     }
 
     await writeContactEvent(tenantId, contact.id, 'CREATED', 'Kişi oluşturuldu', userId, client);
@@ -528,7 +570,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       /* ignore */
     }
     if (error.code === '23505') {
-      return conflict(res, 'Bu iletişim adresi bu tenant içinde zaten kayıtlı');
+      return conflict(res, 'Bu telefon numarası zaten kayıtlı.');
     }
     console.error('Error creating contact:', error);
     res.status(500).json({ error: 'Kişi oluşturulamadı' });
@@ -747,7 +789,7 @@ router.post('/:id/contact-points', async (req: AuthRequest, res: Response) => {
       /* ignore */
     }
     if (error.code === '23505') {
-      return conflict(res, 'Bu iletişim adresi bu tenant içinde zaten kayıtlı');
+      return conflict(res, 'Bu telefon numarası zaten kayıtlı.');
     }
     console.error('Error adding contact point:', error);
     res.status(500).json({ error: 'İletişim noktası eklenemedi' });
