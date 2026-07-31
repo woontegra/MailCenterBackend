@@ -501,8 +501,9 @@ router.post(
            WHERE channel_type = 'WHATSAPP'
              AND status = 'ACTIVE'
              AND id <> $1
+             AND tenant_id = $3
              AND settings->>'waba_id' = $2`,
-          [connection.id, config.wabaId]
+          [connection.id, config.wabaId, tenantId]
         );
         if (others.rows.length === 0) {
           await unsubscribeAppFromWaba({
@@ -534,6 +535,14 @@ router.post(
         [JSON.stringify(settings), connection.id, tenantId]
       );
 
+      // Deactivate only this connection's sender identities
+      await query(
+        `UPDATE sender_identities
+         SET is_active = false, is_default = false, updated_at = CURRENT_TIMESTAMP
+         WHERE tenant_id = $1 AND channel_connection_id = $2 AND channel_type = 'WHATSAPP'`,
+        [tenantId, connection.id]
+      );
+
       res.json({
         success: true,
         unsubscribed,
@@ -542,6 +551,58 @@ router.post(
       });
     } catch (err: any) {
       return badRequest(res, sanitizeErr(err, 'Bağlantı kaldırılamadı'));
+    }
+  }
+);
+
+/**
+ * POST /api/channel-connections/:id/whatsapp/set-default-sender
+ * Mark this connection's WhatsApp sender as brand default (others cleared).
+ */
+router.post(
+  '/:id/whatsapp/set-default-sender',
+  requirePermission('CHANNEL_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const tenantId = req.user!.tenantId;
+      const connectionId = Number(req.params.id);
+      const conn = await query(
+        `SELECT id, brand_id, status FROM channel_connections
+         WHERE id = $1 AND tenant_id = $2 AND channel_type = 'WHATSAPP'`,
+        [connectionId, tenantId]
+      );
+      if (!conn.rows[0]) return notFound(res);
+      if (String(conn.rows[0].status).toUpperCase() !== 'ACTIVE') {
+        return badRequest(res, 'Yalnızca ACTIVE WhatsApp bağlantısı varsayılan yapılabilir');
+      }
+      const brandId = Number(conn.rows[0].brand_id);
+
+      const { ensureWhatsAppSenderForConnection } = await import('../utils/senderIdentityAccess');
+      const ensured = await ensureWhatsAppSenderForConnection(connectionId, tenantId);
+      if (!ensured) return notFound(res);
+
+      await query(
+        `UPDATE sender_identities
+         SET is_default = false, updated_at = CURRENT_TIMESTAMP
+         WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP' AND is_default = true`,
+        [tenantId, brandId]
+      );
+      await query(
+        `UPDATE sender_identities
+         SET is_default = true, is_active = true, is_verified = true, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND tenant_id = $2`,
+        [ensured.sender_identity_id, tenantId]
+      );
+
+      res.json({
+        success: true,
+        sender_identity_id: ensured.sender_identity_id,
+        channel_connection_id: connectionId,
+        brand_id: brandId,
+        message: 'Varsayılan WhatsApp gönderici güncellendi',
+      });
+    } catch (err: any) {
+      return badRequest(res, sanitizeErr(err, 'Varsayılan gönderici ayarlanamadı'));
     }
   }
 );
