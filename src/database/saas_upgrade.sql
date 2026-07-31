@@ -107,8 +107,10 @@ ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS sync_status VARCHAR(20) DEFAU
 ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS sync_error TEXT;
 
 -- 8. EXTEND USERS FOR SUPER ADMIN
+-- Keep 'member' temporarily for legacy rows; super_admin_upgrade.sql normalizes then tightens.
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
-ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('super_admin', 'admin', 'member'));
+ALTER TABLE users ADD CONSTRAINT users_role_check
+  CHECK (role IN ('super_admin', 'admin', 'member', 'user'));
 
 -- 9. INDEXES FOR PERFORMANCE
 CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant_id ON subscriptions(tenant_id);
