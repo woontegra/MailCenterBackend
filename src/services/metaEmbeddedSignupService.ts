@@ -351,6 +351,7 @@ export type MetaMessageTemplate = {
   category: string | null;
   status: string;
   components: unknown;
+  rejectedReason: string | null;
 };
 
 export type MetaCreatedMessageTemplate = {
@@ -370,21 +371,28 @@ export async function createWabaMessageTemplate(params: {
   language: string;
   category: string;
   bodyText: string;
+  /** Ordered example values for {{1}}…{{n}} — required by Meta when placeholders exist. */
+  bodyExamples?: string[];
   apiVersion?: string;
 }): Promise<MetaCreatedMessageTemplate> {
   const version = params.apiVersion || getMetaGraphApiVersion();
   const endpoint = `POST /${params.wabaId}/message_templates`;
   const url = `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/message_templates`;
+  const bodyComponent: Record<string, unknown> = {
+    type: 'BODY',
+    text: params.bodyText,
+  };
+  const examples = Array.isArray(params.bodyExamples)
+    ? params.bodyExamples.map((v) => String(v ?? '').trim()).filter(Boolean)
+    : [];
+  if (examples.length > 0) {
+    bodyComponent.example = { body_text: [examples] };
+  }
   const payload = {
     name: params.name,
     language: params.language,
     category: String(params.category).toUpperCase(),
-    components: [
-      {
-        type: 'BODY',
-        text: params.bodyText,
-      },
-    ],
+    components: [bodyComponent],
   };
 
   const { ok, status, data, networkKind } = await graphJson(url, {
@@ -449,7 +457,7 @@ export async function fetchWabaMessageTemplates(params: {
   const templates: MetaMessageTemplate[] = [];
   let url: string | null =
     `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/message_templates` +
-    `?limit=100&fields=id,name,language,status,category,components`;
+    `?limit=100&fields=id,name,language,status,category,components,rejected_reason`;
   let page = 0;
 
   while (url) {
@@ -500,6 +508,7 @@ export async function fetchWabaMessageTemplates(params: {
         // Normalize early so callers never hit case-sensitive APPROVED checks.
         status: String(row.status || 'UNKNOWN').toUpperCase(),
         components: row.components || [],
+        rejectedReason: row.rejected_reason != null ? String(row.rejected_reason) : null,
       });
     }
     // Follow Meta pagination until exhausted (no name allowlist).

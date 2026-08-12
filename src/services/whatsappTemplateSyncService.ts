@@ -5,13 +5,42 @@ import {
 } from './metaEmbeddedSignupService';
 import { unpackWhatsAppCredentials, parseWhatsAppSettings } from '../whatsapp/whatsappCredentials';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
+import { getReadyTemplateByProviderName } from '../whatsapp/whatsappReadyTemplateCatalog';
 
 export function mapMetaStatusToApproval(status: string): string {
   const s = String(status || '').toUpperCase();
   if (s === 'APPROVED') return 'APPROVED';
   if (s === 'REJECTED' || s === 'DISABLED') return 'REJECTED';
-  if (s === 'PENDING' || s === 'IN_APPEAL' || s === 'PAUSED') return 'PENDING';
+  if (s === 'PAUSED') return 'PAUSED';
+  if (s === 'PENDING' || s === 'IN_APPEAL') return 'PENDING';
   return 'UNKNOWN';
+}
+
+/** Translate common Meta rejection codes/messages into clear Turkish copy for end users. */
+export function humanizeWhatsAppTemplateRejection(
+  raw: string | null | undefined
+): string | null {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const upper = s.toUpperCase();
+  if (upper.includes('INVALID') && upper.includes('FORMAT')) {
+    return 'Meta şablon metnini veya değişken biçimini geçersiz buldu. Örnek değerleri ve metni kontrol edin.';
+  }
+  if (upper.includes('SCAM') || upper.includes('ABUS')) {
+    return 'Meta içeriği politikaya aykırı bulduğu için reddetti. Metni daha net ve ticari kurallara uygun hale getirin.';
+  }
+  if (upper.includes('PROMOTIONAL') || upper.includes('CATEGORY')) {
+    return 'Meta, şablon kategorisini içerikle uyumsuz buldu. Yardımcı (UTILITY) veya pazarlama (MARKETING) seçimini gözden geçirin.';
+  }
+  if (upper.includes('DUPLICATE') || upper.includes('ALREADY EXISTS')) {
+    return 'Bu isimde bir şablon WhatsApp hesabınızda zaten var.';
+  }
+  if (upper === 'NONE' || upper === 'NULL') return null;
+  // Keep readable; strip token-like fragments.
+  return s
+    .replace(/EAA[A-Za-z0-9]+/g, '[redacted]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .slice(0, 400);
 }
 
 /**
@@ -48,7 +77,7 @@ export async function syncWhatsAppTemplatesForConnection(params: {
     if (String(tpl.status).toUpperCase() === 'APPROVED') approved += 1;
 
     const existing = await query(
-      `SELECT id FROM templates
+      `SELECT id, library_key FROM templates
        WHERE tenant_id = $1
          AND brand_id = $2
          AND channel_type = 'WHATSAPP'
@@ -66,7 +95,13 @@ export async function syncWhatsAppTemplatesForConnection(params: {
     );
 
     const approval = mapMetaStatusToApproval(tpl.status);
-    const displayName = `${tpl.name} (${tpl.language})`;
+    const catalogHit = getReadyTemplateByProviderName(tpl.name);
+    const libraryKey = existing.rows[0]?.library_key || catalogHit?.key || null;
+    const rejectionReason =
+      approval === 'REJECTED'
+        ? humanizeWhatsAppTemplateRejection(tpl.rejectedReason)
+        : null;
+    const displayName = catalogHit ? catalogHit.displayName : `${tpl.name} (${tpl.language})`;
     const bodyText =
       Array.isArray(tpl.components)
         ? (tpl.components as any[])
@@ -82,6 +117,7 @@ export async function syncWhatsAppTemplatesForConnection(params: {
       status: tpl.status,
       components: tpl.components,
       waba_id: wabaId,
+      rejected_reason: tpl.rejectedReason || null,
       last_synced_at: now.toISOString(),
     });
 
@@ -94,8 +130,10 @@ export async function syncWhatsAppTemplatesForConnection(params: {
            provider_template_components = $4::jsonb,
            provider_waba_id = $5,
            channel_connection_id = $6,
+           library_key = COALESCE(library_key, $7),
+           provider_rejection_reason = $8,
            updated_at = CURRENT_TIMESTAMP
-         WHERE id = $7 AND tenant_id = $8`,
+         WHERE id = $9 AND tenant_id = $10`,
         [
           displayName,
           bodyText,
@@ -103,6 +141,8 @@ export async function syncWhatsAppTemplatesForConnection(params: {
           componentsJson,
           wabaId,
           params.connectionId,
+          libraryKey,
+          rejectionReason,
           existing.rows[0].id,
           params.tenantId,
         ]
@@ -113,9 +153,9 @@ export async function syncWhatsAppTemplatesForConnection(params: {
            tenant_id, brand_id, name, content, channel_type, plain_text_content,
            provider_template_name, provider_template_language,
            provider_approval_status, provider_template_components, is_active, is_draft,
-           provider_waba_id, channel_connection_id
+           provider_waba_id, channel_connection_id, library_key, provider_rejection_reason
          ) VALUES (
-           $1,$2,$3,$4,'WHATSAPP',$4,$5,$6,$7,$8::jsonb,true,false,$9,$10
+           $1,$2,$3,$4,'WHATSAPP',$4,$5,$6,$7,$8::jsonb,true,false,$9,$10,$11,$12
          )`,
         [
           params.tenantId,
@@ -128,6 +168,8 @@ export async function syncWhatsAppTemplatesForConnection(params: {
           componentsJson,
           wabaId,
           params.connectionId,
+          libraryKey,
+          rejectionReason,
         ]
       );
     }

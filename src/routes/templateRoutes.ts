@@ -21,7 +21,16 @@ import {
   isWhatsAppTemplateCategory,
   normalizeWhatsAppTemplateName,
 } from '../utils/whatsappTemplateName';
-import { mapMetaStatusToApproval } from '../services/whatsappTemplateSyncService';
+import {
+  mapMetaStatusToApproval,
+  safeTemplateSyncError,
+  syncWhatsAppTemplatesForConnection,
+} from '../services/whatsappTemplateSyncService';
+import {
+  listLibraryWithInstalls,
+  refreshLibraryTemplate,
+  submitReadyTemplate,
+} from '../services/whatsappReadyTemplateLibraryService';
 
 const router = Router();
 router.use(authenticate);
@@ -172,6 +181,162 @@ router.post('/render', requirePermission('TEMPLATE_VIEW'), async (req: AuthReque
   }
 });
 
+/**
+ * Ready template library — catalog is global; Meta installs are per WABA.
+ * Routes must stay before /:id.
+ */
+router.get('/library', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res: Response) => {
+  try {
+    const brandId = req.query.brand_id ? Number(req.query.brand_id) : null;
+    const connectionId = req.query.channel_connection_id
+      ? Number(req.query.channel_connection_id)
+      : req.query.channelConnectionId
+        ? Number(req.query.channelConnectionId)
+        : null;
+    const data = await listLibraryWithInstalls({
+      tenantId: req.user!.tenantId,
+      brandId: brandId && Number.isFinite(brandId) ? brandId : null,
+      connectionId: connectionId && Number.isFinite(connectionId) ? connectionId : null,
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error listing ready template library:', error);
+    res.status(500).json({ success: false, error: 'Hazır şablon kütüphanesi yüklenemedi' });
+  }
+});
+
+router.post(
+  '/library/sync',
+  requirePermission('TEMPLATE_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const connectionId = Number(
+        req.body?.channelConnectionId || req.body?.channel_connection_id || ''
+      );
+      if (!connectionId || Number.isNaN(connectionId)) {
+        return badRequest(res, 'WhatsApp hesabı (channelConnectionId) zorunludur');
+      }
+      const result = await syncWhatsAppTemplatesForConnection({
+        tenantId: req.user!.tenantId,
+        connectionId,
+      });
+      res.json({
+        success: true,
+        synced: result.synced,
+        approved: result.approved,
+      });
+    } catch (err: any) {
+      if (err.code === 'NOT_FOUND') return notFound(res);
+      return badRequest(res, safeTemplateSyncError(err));
+    }
+  }
+);
+
+router.post(
+  '/library/:key/submit',
+  requirePermission('TEMPLATE_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const brandId = Number(req.body?.brand_id || req.body?.brandId || '');
+      const connectionId = Number(
+        req.body?.channelConnectionId || req.body?.channel_connection_id || ''
+      );
+      if (!brandId || Number.isNaN(brandId)) {
+        return badRequest(res, 'Marka (brand_id) zorunludur');
+      }
+      if (!connectionId || Number.isNaN(connectionId)) {
+        return badRequest(res, 'WhatsApp hesabı (channelConnectionId) zorunludur');
+      }
+
+      const result = await submitReadyTemplate({
+        tenantId: req.user!.tenantId,
+        userId: req.user!.userId,
+        libraryKey: String(req.params.key || ''),
+        brandId,
+        connectionId,
+        bodyText: req.body?.bodyText ?? req.body?.body_text ?? null,
+        examples: Array.isArray(req.body?.examples) ? req.body.examples : null,
+      });
+
+      if (result.alreadyExists) {
+        return res.status(200).json({
+          success: true,
+          alreadyExists: true,
+          data: result.installation,
+          message: result.message,
+        });
+      }
+
+      await afterCountResourceCreatedSafe(req.user!.tenantId);
+      res.status(201).json({
+        success: true,
+        alreadyExists: false,
+        bodyCustomized: result.bodyCustomized,
+        data: result.installation,
+        message: result.message,
+      });
+    } catch (err: any) {
+      if (err.code === 'NOT_FOUND') return notFound(res, err.message);
+      if (
+        err.code === 'NO_ACTIVE_CONNECTION' ||
+        err.code === 'MISSING_CREDENTIALS' ||
+        err.code === 'BAD_REQUEST' ||
+        err.code === 'META_CREATE_FAILED'
+      ) {
+        return badRequest(res, String(err.message || 'Şablon gönderilemedi'));
+      }
+      console.error('Ready template submit error');
+      res.status(500).json({ success: false, error: 'Hazır şablon gönderilemedi' });
+    }
+  }
+);
+
+router.post(
+  '/library/:key/refresh',
+  requirePermission('TEMPLATE_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const brandId = Number(req.body?.brand_id || req.body?.brandId || '');
+      const connectionId = Number(
+        req.body?.channelConnectionId || req.body?.channel_connection_id || ''
+      );
+      if (!brandId || Number.isNaN(brandId)) {
+        return badRequest(res, 'Marka (brand_id) zorunludur');
+      }
+      if (!connectionId || Number.isNaN(connectionId)) {
+        return badRequest(res, 'WhatsApp hesabı (channelConnectionId) zorunludur');
+      }
+      const result = await refreshLibraryTemplate({
+        tenantId: req.user!.tenantId,
+        brandId,
+        connectionId,
+        libraryKey: String(req.params.key || ''),
+      });
+      res.json({
+        success: true,
+        synced: result.synced,
+        approved: result.approved,
+        data: result.installation,
+      });
+    } catch (err: any) {
+      if (err.code === 'NOT_FOUND') return notFound(res, err.message);
+      if (err.code === 'NO_ACTIVE_CONNECTION' || err.code === 'MISSING_CREDENTIALS') {
+        return badRequest(res, String(err.message));
+      }
+      return badRequest(res, safeTemplateSyncError(err));
+    }
+  }
+);
+
+async function afterCountResourceCreatedSafe(tenantId: number) {
+  try {
+    const { afterCountResourceCreated } = await import('../utils/quotaGuards');
+    await afterCountResourceCreated(tenantId);
+  } catch {
+    /* best-effort */
+  }
+}
+
 function parseEditorJson(raw: unknown): EditorDocument | null {
   if (!raw || typeof raw !== 'object') return null;
   const doc = raw as EditorDocument;
@@ -318,6 +483,8 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
     let providerName: string | null = provider_template_name || null;
     let providerLanguage: string | null = provider_template_language || null;
     let componentsPayload: unknown = provider_template_components || [];
+    let providerWabaId: string | null = null;
+    let savedChannelConnectionId: number | null = null;
 
     if (String(finalChannelType || '').toUpperCase() === 'WHATSAPP') {
       if (!brand_id) {
@@ -403,12 +570,15 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
       metaCategory = created.category || category;
       approval = mapMetaStatusToApproval(created.status || 'PENDING');
       if (approval === 'UNKNOWN') approval = 'PENDING';
+      providerWabaId = config.wabaId;
+      savedChannelConnectionId = channelConnectionId;
       componentsPayload = {
         meta_template_id: metaTemplateId,
         category: metaCategory,
         status: String(created.status || 'PENDING').toUpperCase(),
         components: [{ type: 'BODY', text: bodyText }],
         created_via: 'META_GRAPH',
+        waba_id: providerWabaId,
         last_synced_at: new Date().toISOString(),
       };
     }
@@ -419,8 +589,8 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
          sender_identity_id, subject, plain_text_content, variables, is_active,
          description, preheader, editor_json, is_draft, template_kind,
          provider_template_name, provider_template_language, provider_approval_status,
-         provider_template_components)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+         provider_template_components, provider_waba_id, channel_connection_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
        RETURNING *`,
       [
         String(name).trim(),
@@ -444,6 +614,8 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
         providerLanguage,
         approval,
         JSON.stringify(componentsPayload || []),
+        providerWabaId,
+        savedChannelConnectionId,
       ]
     );
 

@@ -29,6 +29,7 @@ function main() {
   assert.strictEqual(mapMetaStatusToApproval('PENDING'), 'PENDING');
   assert.strictEqual(mapMetaStatusToApproval('approved'), 'APPROVED');
   assert.strictEqual(mapMetaStatusToApproval('REJECTED'), 'REJECTED');
+  assert.strictEqual(mapMetaStatusToApproval('PAUSED'), 'PAUSED');
 
   // UI must never treat client APPROVED as source of truth — Meta owns status
   const clientStatus = 'APPROVED';
