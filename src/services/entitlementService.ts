@@ -359,9 +359,13 @@ export async function assertUsageAvailable(
     case 'max_sms_connections':
       used = Number(ent.usage.sms_connections_count || 0);
       break;
-    case 'max_whatsapp_connections':
-      used = Number(ent.usage.whatsapp_connections_count || 0);
+    case 'max_whatsapp_connections': {
+      const { countWhatsAppConnectionsTowardQuota } = await import(
+        '../utils/whatsappConnectionQuota'
+      );
+      used = await countWhatsAppConnectionsTowardQuota(tenantId);
       break;
+    }
     case 'max_sender_identities': {
       const c = await query(
         `SELECT COUNT(*)::int AS c FROM sender_identities WHERE tenant_id = $1`,
@@ -470,12 +474,13 @@ export async function recalculateCountUsage(tenantId: number) {
          WHERE tenant_id = $1 AND channel_type = 'SMS'`,
         [tenantId]
       ),
-      query(
-        `SELECT COUNT(*)::int AS c FROM channel_connections
-         WHERE tenant_id = $1 AND channel_type = 'WHATSAPP'
-           AND UPPER(COALESCE(status, '')) <> 'DISABLED'`,
-        [tenantId]
-      ),
+      (async () => {
+        const { countWhatsAppConnectionsTowardQuota } = await import(
+          '../utils/whatsappConnectionQuota'
+        );
+        const c = await countWhatsAppConnectionsTowardQuota(tenantId);
+        return { rows: [{ c }] };
+      })(),
       query(
         `SELECT COUNT(*)::int AS c FROM contacts WHERE tenant_id = $1 AND status <> 'ARCHIVED'`,
         [tenantId]

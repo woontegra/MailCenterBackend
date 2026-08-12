@@ -255,6 +255,24 @@ router.post(
 
       let saved;
       if (existingId) {
+        const prev = await query(
+          `SELECT status FROM channel_connections WHERE id = $1 AND tenant_id = $2`,
+          [existingId, tenantId]
+        );
+        const previousStatus = prev.rows[0]?.status;
+        const { shouldConsumeWhatsAppConnectionQuota } = await import(
+          '../utils/whatsappConnectionQuota'
+        );
+        const { enforceCountQuota, afterCountResourceCreated } = await import('../utils/quotaGuards');
+        if (
+          shouldConsumeWhatsAppConnectionQuota({
+            isNewRow: false,
+            previousStatus,
+            nextStatus: 'ACTIVE',
+          })
+        ) {
+          if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
+        }
         saved = await query(
           `UPDATE channel_connections
            SET provider = 'META_WHATSAPP_CLOUD',
@@ -268,6 +286,7 @@ router.post(
            RETURNING *`,
           [displayName, encrypted, JSON.stringify(settings), existingId, tenantId]
         );
+        await afterCountResourceCreated(tenantId);
       } else {
         const { enforceCountQuota, afterCountResourceCreated } = await import('../utils/quotaGuards');
         if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;

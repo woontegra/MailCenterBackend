@@ -240,11 +240,10 @@ router.post('/', requirePermission('CHANNEL_MANAGE'), async (req: AuthRequest, r
     const channelTypeUpper = String(channel_type || '').toUpperCase();
     if (channelTypeUpper === 'SMS') {
       if (!(await enforceCountQuota(res, tenantId, 'max_sms_connections'))) return;
-    } else if (channelTypeUpper === 'WHATSAPP') {
-      if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
     } else if (channelTypeUpper === 'EMAIL') {
       if (!(await enforceCountQuota(res, tenantId, 'max_email_accounts'))) return;
     }
+    // WhatsApp: enforce after we know whether this is a new ACTIVE slot or reactivation
 
     if (!brand_id || !isChannelType(channel_type) || !display_name) {
       return badRequest(res, 'brand_id, channel_type and display_name are required');
@@ -307,6 +306,9 @@ router.post('/', requirePermission('CHANNEL_MANAGE'), async (req: AuthRequest, r
     // WhatsApp Getting Started / token refresh: same phone_number_id → update existing
     // connection (e.g. Meta Review test id=11) instead of creating a duplicate.
     if (channel_type === 'WHATSAPP') {
+      const { shouldConsumeWhatsAppConnectionQuota } = await import(
+        '../utils/whatsappConnectionQuota'
+      );
       let phoneNumberId = '';
       try {
         phoneNumberId = parseWhatsAppSettings(finalSettings).phoneNumberId;
@@ -327,6 +329,15 @@ router.post('/', requirePermission('CHANNEL_MANAGE'), async (req: AuthRequest, r
         );
         if (existing.rows[0]) {
           const current = existing.rows[0];
+          if (
+            shouldConsumeWhatsAppConnectionQuota({
+              isNewRow: false,
+              previousStatus: current.status,
+              nextStatus: String(status),
+            })
+          ) {
+            if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
+          }
           const mergedSettings = {
             ...(typeof current.settings === 'object' && current.settings
               ? current.settings
@@ -352,8 +363,18 @@ router.post('/', requirePermission('CHANNEL_MANAGE'), async (req: AuthRequest, r
               tenantId,
             ]
           );
+          await afterCountResourceCreated(tenantId);
           return res.json(sanitizeConnection(updated.rows[0]));
         }
+      }
+
+      if (
+        shouldConsumeWhatsAppConnectionQuota({
+          isNewRow: true,
+          nextStatus: String(status),
+        })
+      ) {
+        if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
       }
     }
 
