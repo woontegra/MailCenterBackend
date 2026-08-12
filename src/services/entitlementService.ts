@@ -472,7 +472,8 @@ export async function recalculateCountUsage(tenantId: number) {
       ),
       query(
         `SELECT COUNT(*)::int AS c FROM channel_connections
-         WHERE tenant_id = $1 AND channel_type = 'WHATSAPP'`,
+         WHERE tenant_id = $1 AND channel_type = 'WHATSAPP'
+           AND UPPER(COALESCE(status, '')) <> 'DISABLED'`,
         [tenantId]
       ),
       query(

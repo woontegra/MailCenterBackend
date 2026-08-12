@@ -543,6 +543,9 @@ router.post(
         [tenantId, connection.id]
       );
 
+      const { afterCountResourceCreated } = await import('../utils/quotaGuards');
+      await afterCountResourceCreated(tenantId);
+
       res.json({
         success: true,
         unsubscribed,
