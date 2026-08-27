@@ -10,6 +10,10 @@ import {
 } from '../utils/whatsappTemplateName';
 import { mapMetaStatusToApproval } from '../services/whatsappTemplateSyncService';
 import { formatWhatsAppSendFailureMessage } from '../whatsapp/providers/metaWhatsAppCloudAdapter';
+import {
+  extractMetaGraphFailure,
+  formatMetaGraphUserMessage,
+} from '../services/metaEmbeddedSignupService';
 
 function main() {
   assert.strictEqual(
@@ -44,6 +48,26 @@ function main() {
   assert.ok(fail.includes('kod: 100'));
   assert.ok(!/EAA[A-Za-z0-9]+/.test(fail));
   assert.ok(!fail.toLowerCase().includes('bearer'));
+
+  const createFail = extractMetaGraphFailure({
+    status: 400,
+    data: {
+      error: {
+        message: 'Invalid parameter',
+        code: 100,
+        error_user_msg: 'Variables cannot be at the start or end of the template.',
+        fbtrace_id: 'abc',
+      },
+    },
+    graphVersion: 'v25.0',
+    endpoint: 'POST /waba/message_templates',
+  });
+  const createMsg = formatMetaGraphUserMessage(
+    createFail,
+    'WhatsApp şablonu oluşturulamadı'
+  );
+  assert.ok(createMsg.includes('Variables cannot'));
+  assert.ok(!createMsg.includes('Bearer'));
 
   // Fake local row must not be created when Meta fails — contract flag
   const metaFailed = true;

@@ -25,7 +25,6 @@ export type LibraryInstallSummary = {
   rejectionReason: string | null;
   providerTemplateName: string;
   channelConnectionId: number | null;
-  providerWabaId: string | null;
   canSend: boolean;
 };
 
@@ -43,7 +42,6 @@ function publicInstallRow(row: any): LibraryInstallSummary {
         : null,
     providerTemplateName: String(row.provider_template_name || ''),
     channelConnectionId: row.channel_connection_id != null ? Number(row.channel_connection_id) : null,
-    providerWabaId: row.provider_waba_id ? String(row.provider_waba_id) : null,
     canSend: status === 'APPROVED' && Boolean(row.provider_template_name) && row.is_active !== false,
   };
 }
@@ -282,10 +280,15 @@ export async function submitReadyTemplate(params: {
       apiVersion: config.apiVersion,
     });
   } catch (metaErr: any) {
-    throw Object.assign(
-      new Error(String(metaErr?.message || 'WhatsApp şablonu oluşturulamadı')),
-      { code: 'META_CREATE_FAILED', metaFailure: metaErr?.metaFailure }
-    );
+    const failure = metaErr?.metaFailure;
+    const message =
+      failure && typeof failure === 'object'
+        ? String(metaErr?.message || 'WhatsApp şablonu oluşturulamadı')
+        : String(metaErr?.message || 'WhatsApp şablonu oluşturulamadı');
+    throw Object.assign(new Error(message), {
+      code: 'META_CREATE_FAILED',
+      metaFailure: failure || null,
+    });
   }
 
   let approval = mapMetaStatusToApproval(created.status || 'PENDING');

@@ -283,6 +283,7 @@ router.post(
         err.code === 'BAD_REQUEST' ||
         err.code === 'META_CREATE_FAILED'
       ) {
+        // Prefer Meta user-facing fields already composed into err.message
         return badRequest(res, String(err.message || 'Şablon gönderilemedi'));
       }
       console.error('Ready template submit error');

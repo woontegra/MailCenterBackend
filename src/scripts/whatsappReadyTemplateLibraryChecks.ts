@@ -5,16 +5,25 @@
 import assert from 'assert';
 import {
   WHATSAPP_READY_TEMPLATE_CATALOG,
+  bodyEndsWithPlaceholder,
+  bodyHasStaticTextAfterLastPlaceholder,
+  bodyStartsWithPlaceholder,
   buildCatalogPreview,
   countBodyPlaceholders,
   getReadyTemplateByKey,
   getReadyTemplateByProviderName,
+  listBodyPlaceholderOrder,
 } from '../whatsapp/whatsappReadyTemplateCatalog';
 import {
   humanizeWhatsAppTemplateRejection,
   mapMetaStatusToApproval,
 } from '../services/whatsappTemplateSyncService';
 import { isValidWhatsAppTemplateName } from '../utils/whatsappTemplateName';
+import {
+  extractMetaGraphFailure,
+  formatMetaGraphUserMessage,
+  sanitizeMetaErrorData,
+} from '../services/metaEmbeddedSignupService';
 
 function main() {
   assert.strictEqual(WHATSAPP_READY_TEMPLATE_CATALOG.length, 12);
@@ -28,22 +37,54 @@ function main() {
     assert.ok(isValidWhatsAppTemplateName(item.providerName), item.providerName);
     assert.ok(['UTILITY', 'MARKETING'].includes(item.category), item.key);
     assert.strictEqual(item.language, 'tr');
+
+    assert.strictEqual(
+      bodyStartsWithPlaceholder(item.bodyText),
+      false,
+      `${item.key} BODY must not start with a placeholder`
+    );
+    assert.strictEqual(
+      bodyEndsWithPlaceholder(item.bodyText),
+      false,
+      `${item.key} BODY must not end with a placeholder`
+    );
+    assert.ok(
+      bodyHasStaticTextAfterLastPlaceholder(item.bodyText),
+      `${item.key} BODY must have meaningful static text after the last placeholder`
+    );
+
     const placeholders = countBodyPlaceholders(item.bodyText);
     assert.strictEqual(
       placeholders,
       item.variables.length,
       `${item.key} placeholder/variable mismatch`
     );
+    const order = listBodyPlaceholderOrder(item.bodyText);
+    assert.deepStrictEqual(
+      order,
+      item.variables.map((_, i) => i + 1),
+      `${item.key} placeholder order must be sequential 1..n`
+    );
     for (let i = 0; i < item.variables.length; i++) {
       assert.strictEqual(item.variables[i].index, i + 1);
       assert.ok(item.variables[i].example.trim().length > 0);
     }
+    assert.strictEqual(
+      item.variables.map((v) => v.example).length,
+      placeholders,
+      `${item.key} example count must match placeholder count`
+    );
     const preview = buildCatalogPreview(
       item.bodyText,
       item.variables.map((v) => v.example)
     );
     assert.ok(!preview.includes('{{'), `${item.key} preview still has placeholders`);
   }
+
+  const overdue = getReadyTemplateByKey('payment_overdue');
+  assert.ok(overdue);
+  assert.ok(overdue!.bodyText.includes('Bilginize sunarız.'));
+  assert.ok(!bodyEndsWithPlaceholder(overdue!.bodyText));
 
   assert.ok(getReadyTemplateByKey('payment_due_reminder'));
   assert.ok(getReadyTemplateByProviderName('mc_odeme_son_tarih'));
@@ -86,6 +127,46 @@ function main() {
   assert.ok(!/EAA[A-Za-z0-9]+/.test(human!));
   assert.ok(!human!.toLowerCase().includes('bearer abc'));
 
+  // Meta failure prefers error_user_msg over bare Invalid parameter
+  const failure = extractMetaGraphFailure({
+    status: 400,
+    data: {
+      error: {
+        message: 'Invalid parameter',
+        type: 'OAuthException',
+        code: 100,
+        error_subcode: 2388299,
+        error_user_title: 'Trailing parameter',
+        error_user_msg: 'Variables cannot be at the start or end of the template.',
+        error_data: {
+          messaging_product: 'whatsapp',
+          details: 'Leading or trailing parameters not allowed',
+        },
+        fbtrace_id: 'TRACE_TEST',
+      },
+    },
+    wabaId: '420529479291363',
+    graphVersion: 'v25.0',
+    endpoint: 'POST /420529479291363/message_templates',
+  });
+  assert.strictEqual(failure.code, 100);
+  assert.strictEqual(failure.errorSubcode, 2388299);
+  assert.strictEqual(failure.errorUserTitle, 'Trailing parameter');
+  assert.ok(failure.errorUserMsg?.includes('Variables cannot'));
+  assert.ok(failure.errorData && typeof failure.errorData === 'object');
+  const userMsg = formatMetaGraphUserMessage(failure, 'WhatsApp şablonu oluşturulamadı');
+  assert.ok(userMsg.includes('Variables cannot'));
+  assert.ok(userMsg.includes('(kod: 100)'));
+  assert.ok(!userMsg.startsWith('WhatsApp şablonu oluşturulamadı: Invalid parameter'));
+
+  const redacted = sanitizeMetaErrorData({
+    details: 'bad EAABxyztoken123 Bearer secretvalue',
+    messaging_product: 'whatsapp',
+  });
+  assert.ok(redacted && typeof redacted === 'object');
+  assert.ok(!JSON.stringify(redacted).includes('EAABxyztoken'));
+  assert.ok(!JSON.stringify(redacted).toLowerCase().includes('bearer secret'));
+
   // FE payload must not include secrets
   const fePayload = {
     brand_id: 13,
@@ -103,6 +184,10 @@ function main() {
   }
   assert.strictEqual(shouldCreateOnMeta(null), true);
   assert.strictEqual(shouldCreateOnMeta({ id: 1 }), false);
+
+  // User-facing CTA must not say WABA
+  const cta = 'WhatsApp hesabıma ekle ve onaya gönder';
+  assert.ok(!/waba/i.test(cta));
 
   console.log('whatsappReadyTemplateLibraryChecks PASS');
 }

@@ -32,13 +32,38 @@ export type MetaWabaProfile = {
   name: string | null;
 };
 
-function sanitizeGraphError(data: any, status?: number): string {
-  const err = data?.error || data;
-  const msg = String(err?.message || err?.error_user_msg || `Meta API hatası (${status || '?'})`)
+function redactSecrets(text: string): string {
+  return String(text || '')
     .replace(/EAA[A-Za-z0-9]+/g, '[redacted]')
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-    .slice(0, 300);
-  return msg;
+    .replace(/access[_-]?token["']?\s*[:=]\s*["']?[^"'&\s]+/gi, 'access_token=[redacted]');
+}
+
+function sanitizeGraphError(data: any, status?: number): string {
+  const err = data?.error || data;
+  const msg = String(err?.message || err?.error_user_msg || `Meta API hatası (${status || '?'})`);
+  return redactSecrets(msg).slice(0, 300);
+}
+
+/** Safe subset of Meta error_data — never tokens / Authorization / credentials. */
+export function sanitizeMetaErrorData(raw: unknown): Record<string, unknown> | string | null {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    const s = redactSecrets(raw).trim().slice(0, 500);
+    return s || null;
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return redactSecrets(JSON.stringify(raw)).slice(0, 500);
+  }
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ['details', 'messaging_product', 'blame_field_specs', 'error_subcode']) {
+    if (src[key] == null) continue;
+    const v = src[key];
+    out[key] =
+      typeof v === 'string' ? redactSecrets(v).slice(0, 500) : typeof v === 'number' || typeof v === 'boolean' ? v : redactSecrets(JSON.stringify(v)).slice(0, 300);
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 export type MetaGraphFailureKind = 'http' | 'network' | 'timeout' | 'unknown';
@@ -50,6 +75,9 @@ export type MetaGraphFailureInfo = {
   type: string | null;
   code: number | string | null;
   errorSubcode: number | string | null;
+  errorUserTitle: string | null;
+  errorUserMsg: string | null;
+  errorData: Record<string, unknown> | string | null;
   fbtraceId: string | null;
   wabaId: string | null;
   graphVersion: string;
@@ -80,6 +108,15 @@ export function extractMetaGraphFailure(params: {
         ? String(err?.message || params.data?.error?.message || 'Meta API ağ hatası')
         : String(err?.message || err?.error_user_msg || `Meta API hatası (${params.status || '?'})`);
 
+  const errorUserTitle =
+    err?.error_user_title != null
+      ? redactSecrets(String(err.error_user_title)).trim().slice(0, 200) || null
+      : null;
+  const errorUserMsg =
+    err?.error_user_msg != null
+      ? redactSecrets(String(err.error_user_msg)).trim().slice(0, 500) || null
+      : null;
+
   return {
     kind,
     httpStatus: params.status > 0 ? params.status : null,
@@ -87,6 +124,9 @@ export function extractMetaGraphFailure(params: {
     type: err?.type != null ? String(err.type) : null,
     code: err?.code != null ? err.code : null,
     errorSubcode: err?.error_subcode != null ? err.error_subcode : null,
+    errorUserTitle,
+    errorUserMsg,
+    errorData: sanitizeMetaErrorData(err?.error_data),
     fbtraceId: err?.fbtrace_id != null ? String(err.fbtrace_id) : null,
     wabaId: params.wabaId ? String(params.wabaId) : null,
     graphVersion: params.graphVersion,
@@ -103,6 +143,9 @@ export function logMetaGraphFailure(context: string, info: MetaGraphFailureInfo)
     type: info.type,
     code: info.code,
     errorSubcode: info.errorSubcode,
+    errorUserTitle: info.errorUserTitle,
+    errorUserMsg: info.errorUserMsg,
+    errorData: info.errorData,
     fbtraceId: info.fbtraceId,
     wabaId: info.wabaId,
     graphVersion: info.graphVersion,
@@ -110,9 +153,26 @@ export function logMetaGraphFailure(context: string, info: MetaGraphFailureInfo)
   });
 }
 
-export function formatWebhookSubscribeFailureMessage(info: MetaGraphFailureInfo): string {
+/** Prefer Meta's user-facing fields over bare "Invalid parameter". */
+export function formatMetaGraphUserMessage(
+  info: MetaGraphFailureInfo,
+  prefix: string
+): string {
+  const detail =
+    (info.errorUserMsg && info.errorUserMsg.trim()) ||
+    (info.errorUserTitle && info.errorUserTitle.trim()) ||
+    (typeof info.errorData === 'object' &&
+    info.errorData &&
+    typeof (info.errorData as any).details === 'string'
+      ? String((info.errorData as any).details).trim()
+      : '') ||
+    info.message;
   const codePart = info.code != null ? ` (kod: ${info.code})` : '';
-  return `Webhook aboneliği başarısız: ${info.message}${codePart}`;
+  return `${prefix}: ${detail}${codePart}`;
+}
+
+export function formatWebhookSubscribeFailureMessage(info: MetaGraphFailureInfo): string {
+  return formatMetaGraphUserMessage(info, 'Webhook aboneliği başarısız');
 }
 
 async function graphJson(
@@ -414,9 +474,8 @@ export async function createWabaMessageTemplate(params: {
       networkKind,
     });
     logMetaGraphFailure('message_templates POST failed', failure);
-    const codePart = failure.code != null ? ` (kod: ${failure.code})` : '';
     throw Object.assign(
-      new Error(`WhatsApp şablonu oluşturulamadı: ${failure.message}${codePart}`),
+      new Error(formatMetaGraphUserMessage(failure, 'WhatsApp şablonu oluşturulamadı')),
       { code: 'TEMPLATE_CREATE_FAILED', metaFailure: failure }
     );
   }
