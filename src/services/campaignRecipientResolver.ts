@@ -7,7 +7,7 @@ import {
   normalizeEmailAddress,
 } from './suppressionService';
 
-export type AudienceMode = 'ALL' | 'TAG' | 'COMPANY' | 'MANUAL' | 'SEGMENT' | 'IMPORT';
+export type AudienceMode = 'ALL' | 'TAG' | 'COMPANY' | 'MANUAL' | 'SEGMENT' | 'IMPORT' | 'LIST';
 
 export type AudienceConfig = {
   mode?: AudienceMode;
@@ -16,6 +16,7 @@ export type AudienceConfig = {
   contact_ids?: number[];
   segment_id?: number;
   import_id?: number;
+  list_ids?: number[];
 };
 
 export type ResolvedRecipient = {
@@ -30,13 +31,17 @@ export type ResolvedRecipient = {
 
 export type RecipientPreparationSummary = {
   initial_total: number;
+  list_total?: number;
   duplicate_removed: number;
   invalid_removed: number;
   missing_email_removed: number;
+  no_email_permission?: number;
   unsubscribed_removed: number;
   blocked_removed: number;
+  bounce_removed?: number;
   suppressed_removed: number;
   final_total: number;
+  sendable?: number;
 };
 
 function buildPersonalisation(row: {
@@ -202,6 +207,41 @@ async function loadContactRecipients(params: {
       [tenantId, brandId, company]
     );
     rows = res.rows;
+  } else if (mode === 'LIST') {
+    const listIds = (audience.list_ids || []).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (listIds.length === 0) return [];
+    const listConsent = brandId
+      ? `AND EXISTS (
+          SELECT 1 FROM communication_preferences pref
+          WHERE pref.tenant_id = c.tenant_id AND pref.contact_id = c.id
+            AND pref.channel_type = 'EMAIL'
+            AND (pref.brand_id IS NULL OR pref.brand_id = $2)
+            AND pref.status = 'OPTED_IN'
+        )`
+      : `AND EXISTS (
+          SELECT 1 FROM communication_preferences pref
+          WHERE pref.tenant_id = c.tenant_id AND pref.contact_id = c.id
+            AND pref.channel_type = 'EMAIL'
+            AND pref.brand_id IS NULL
+            AND pref.status = 'OPTED_IN'
+        )`;
+    const res = await query(
+      `SELECT DISTINCT ON (LOWER(TRIM(cp.value)))
+         c.id AS contact_id, c.first_name, c.last_name, c.company_name,
+         cp.value AS email, phone.value AS phone
+       ${baseFrom}
+       AND EXISTS (
+         SELECT 1 FROM contact_list_members clm
+         JOIN contact_lists cl ON cl.id = clm.list_id AND cl.tenant_id = clm.tenant_id
+         WHERE clm.tenant_id = c.tenant_id AND clm.contact_id = c.id
+           AND clm.list_id = ANY($${brandId ? 3 : 2}::int[]) AND cl.is_active = true
+       )
+       ${brandScope}
+       ${listConsent}
+       ORDER BY LOWER(TRIM(cp.value)), cp.is_primary DESC, cp.id`,
+      brandId ? [tenantId, brandId, listIds] : [tenantId, listIds]
+    );
+    rows = res.rows;
   } else if (mode === 'TAG') {
     const tagIds = (audience.tag_ids || []).map(Number).filter((n) => Number.isFinite(n) && n > 0);
     if (tagIds.length === 0) return [];
@@ -348,4 +388,113 @@ export async function previewAudienceCount(params: {
 }): Promise<{ count: number; summary: RecipientPreparationSummary }> {
   const prepared = await prepareCampaignRecipients(params);
   return { count: prepared.recipients.length, summary: prepared.summary };
+}
+
+export async function previewListEmailAudience(params: {
+  tenantId: number;
+  brandId: number | null;
+  listIds: number[];
+}) {
+  const { resolveListContactIds } = await import('./contactListService');
+  const contactIds = await resolveListContactIds(params.tenantId, params.listIds);
+  const listTotal = contactIds.length;
+
+  if (contactIds.length === 0) {
+    return {
+      count: 0,
+      summary: {
+        list_total: 0,
+        initial_total: 0,
+        sendable: 0,
+        duplicate_removed: 0,
+        invalid_removed: 0,
+        missing_email_removed: 0,
+        no_email_permission: 0,
+        unsubscribed_removed: 0,
+        blocked_removed: 0,
+        bounce_removed: 0,
+        suppressed_removed: 0,
+        final_total: 0,
+      },
+    };
+  }
+
+  const audience: AudienceConfig = { mode: 'LIST', list_ids: params.listIds };
+  const prepared = await prepareCampaignRecipients({
+    tenantId: params.tenantId,
+    brandId: params.brandId,
+    audience,
+  });
+
+  const rawEmails = await query(
+    `SELECT DISTINCT c.id AS contact_id, cp.normalized_value AS email_normalized
+     FROM contacts c
+     JOIN contact_list_members clm ON clm.contact_id = c.id AND clm.tenant_id = c.tenant_id
+     JOIN contact_lists cl ON cl.id = clm.list_id AND cl.tenant_id = clm.tenant_id
+     LEFT JOIN contact_points cp ON cp.contact_id = c.id AND cp.tenant_id = c.tenant_id
+       AND cp.channel_type = 'EMAIL' AND cp.is_active = true
+     WHERE c.tenant_id = $1 AND c.id = ANY($2::int[])
+       AND clm.list_id = ANY($3::int[]) AND cl.is_active = true AND c.status = 'ACTIVE'`,
+    [params.tenantId, contactIds, params.listIds]
+  );
+
+  let missingEmail = 0;
+  let invalidEmail = 0;
+  let noPermission = 0;
+  const emailsToCheck: string[] = [];
+
+  for (const row of rawEmails.rows) {
+    const email = String(row.email_normalized || '').trim();
+    if (!email) {
+      missingEmail += 1;
+      continue;
+    }
+    if (!isValidEmailAddress(email)) {
+      invalidEmail += 1;
+      continue;
+    }
+    emailsToCheck.push(normalizeEmailAddress(email));
+  }
+
+  const prefRows = await query(
+    `SELECT contact_id, status FROM communication_preferences
+     WHERE tenant_id = $1 AND contact_id = ANY($2::int[])
+       AND channel_type = 'EMAIL'
+       AND brand_id IS NULL`,
+    [params.tenantId, contactIds]
+  );
+  const prefByContact = new Map<number, string>();
+  for (const p of prefRows.rows) prefByContact.set(Number(p.contact_id), p.status);
+
+  for (const cid of contactIds) {
+    const st = prefByContact.get(cid) || 'UNKNOWN';
+    if (st !== 'OPTED_IN') noPermission += 1;
+  }
+
+  const suppressions = await findSuppressedEmails(params.tenantId, emailsToCheck);
+  let unsubscribed = 0;
+  let bounce = 0;
+  let blocked = 0;
+  for (const [, sup] of suppressions) {
+    if (sup.reason === 'UNSUBSCRIBED') unsubscribed += 1;
+    else if (sup.reason === 'BOUNCE_PERMANENT') bounce += 1;
+    else blocked += 1;
+  }
+
+  const summary: RecipientPreparationSummary = {
+    list_total: listTotal,
+    initial_total: prepared.summary.initial_total,
+    sendable: prepared.recipients.length,
+    duplicate_removed: prepared.summary.duplicate_removed,
+    invalid_removed: invalidEmail,
+    missing_email_removed: missingEmail,
+    no_email_permission: noPermission,
+    unsubscribed_removed: unsubscribed,
+    blocked_removed: blocked,
+    bounce_removed: bounce,
+    suppressed_removed: prepared.summary.suppressed_removed,
+    final_total: prepared.recipients.length,
+  };
+
+  return { count: prepared.recipients.length, summary };
 }

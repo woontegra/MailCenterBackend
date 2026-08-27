@@ -125,6 +125,9 @@ router.post('/preview-recipients', async (req: AuthRequest, res: Response) => {
       contactIds: Array.isArray(req.body.contact_ids ?? req.body.contactIds)
         ? (req.body.contact_ids ?? req.body.contactIds).map(Number).filter(Boolean)
         : undefined,
+      listIds: Array.isArray(req.body.list_ids ?? req.body.listIds)
+        ? (req.body.list_ids ?? req.body.listIds).map(Number).filter(Boolean)
+        : undefined,
       phonesPaste: req.body.phones_paste ?? req.body.phonesPaste,
       rows: req.body.rows,
     });
@@ -199,6 +202,9 @@ router.post('/launch', async (req: AuthRequest, res: Response) => {
       variableMapping: req.body.variable_mapping ?? req.body.variableMapping ?? {},
       contactIds: Array.isArray(req.body.contact_ids ?? req.body.contactIds)
         ? (req.body.contact_ids ?? req.body.contactIds).map(Number).filter(Boolean)
+        : undefined,
+      listIds: Array.isArray(req.body.list_ids ?? req.body.listIds)
+        ? (req.body.list_ids ?? req.body.listIds).map(Number).filter(Boolean)
         : undefined,
       phonesPaste: req.body.phones_paste ?? req.body.phonesPaste,
       rows: req.body.rows,

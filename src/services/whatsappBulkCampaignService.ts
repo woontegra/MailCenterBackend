@@ -12,6 +12,10 @@ import { parseRecipientFile } from './campaignImportService';
 import { enqueueCampaignDispatch } from '../queues/mailQueue';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
 import { getCampaignForTenant, pauseCampaign, cancelCampaign, resumeCampaign } from './campaignService';
+import {
+  loadContactsFromLists,
+  enrichCampaignsWithListMeta,
+} from './contactListService';
 
 export type VariableMapping = Record<string, string>;
 
@@ -360,6 +364,7 @@ export async function previewWhatsAppBulkCampaign(params: {
   templateId: number;
   variableMapping: VariableMapping;
   contactIds?: number[];
+  listIds?: number[];
   phonesPaste?: string;
   rows?: BulkRecipientInput[];
 }) {
@@ -380,6 +385,8 @@ export async function previewWhatsAppBulkCampaign(params: {
   let inputs: BulkRecipientInput[] = [];
   if (params.rows?.length) {
     inputs = params.rows;
+  } else if (params.listIds?.length) {
+    inputs = await loadContactsFromLists(params.tenantId, params.listIds);
   } else if (params.contactIds?.length) {
     inputs = await loadContactRows(params.tenantId, params.contactIds);
   } else if (params.phonesPaste?.trim()) {
@@ -497,6 +504,7 @@ export async function launchWhatsAppBulkCampaign(params: {
   templateId: number;
   variableMapping: VariableMapping;
   contactIds?: number[];
+  listIds?: number[];
   phonesPaste?: string;
   rows?: BulkRecipientInput[];
 }) {
@@ -532,7 +540,9 @@ export async function launchWhatsAppBulkCampaign(params: {
 
   let inputs: BulkRecipientInput[] = [];
   if (params.rows?.length) inputs = params.rows;
-  else if (params.contactIds?.length) {
+  else if (params.listIds?.length) {
+    inputs = await loadContactsFromLists(params.tenantId, params.listIds);
+  } else if (params.contactIds?.length) {
     inputs = await loadContactRows(params.tenantId, params.contactIds);
   } else if (params.phonesPaste?.trim()) {
     inputs = parsePastePhones(params.phonesPaste);
@@ -581,9 +591,12 @@ export async function launchWhatsAppBulkCampaign(params: {
         JSON.stringify({
           source: params.rows?.length
             ? 'import'
-            : params.contactIds?.length
-              ? 'contacts'
-              : 'paste',
+            : params.listIds?.length
+              ? 'lists'
+              : params.contactIds?.length
+                ? 'contacts'
+                : 'paste',
+          list_ids: params.listIds || [],
           variable_mapping: params.variableMapping,
         }),
         JSON.stringify(resolved.summary),
@@ -612,7 +625,7 @@ export async function launchWhatsAppBulkCampaign(params: {
           status,
           r.category !== 'sendable' ? r.category : null,
           r.category !== 'sendable' ? r.reason : null,
-          params.contactIds?.length ? 'contacts' : params.rows?.length ? 'import' : 'paste',
+          params.listIds?.length ? 'lists' : params.contactIds?.length ? 'contacts' : params.rows?.length ? 'import' : 'paste',
         ]
       );
     }
@@ -653,7 +666,7 @@ export async function listWhatsAppCampaigns(
     sql += ` LIMIT $${values.length}`;
   }
   const result = await query(sql, values);
-  return result.rows;
+  return enrichCampaignsWithListMeta(tenantId, result.rows);
 }
 
 export async function listWhatsAppCampaignRecipients(

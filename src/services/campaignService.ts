@@ -46,6 +46,7 @@ function parseAudience(raw: unknown): AudienceConfig {
     contact_ids: Array.isArray(o.contact_ids) ? o.contact_ids.map(Number).filter(Boolean) : [],
     segment_id: o.segment_id ? Number(o.segment_id) : undefined,
     import_id: o.import_id ? Number(o.import_id) : undefined,
+    list_ids: Array.isArray(o.list_ids) ? o.list_ids.map(Number).filter(Boolean) : [],
   };
 }
 
@@ -82,9 +83,11 @@ export async function listCampaigns(tenantId: number, params?: { brand_id?: numb
     values.push(`%${params.q.trim()}%`);
     sql += ` AND c.name ILIKE $${values.length}`;
   }
+  sql += ` AND COALESCE(c.channel_type, 'EMAIL') = 'EMAIL'`;
   sql += ' ORDER BY c.updated_at DESC NULLS LAST, c.created_at DESC';
   const result = await query(sql, values);
-  return result.rows;
+  const { enrichCampaignsWithListMeta } = await import('./contactListService');
+  return enrichCampaignsWithListMeta(tenantId, result.rows);
 }
 
 async function assertBrand(tenantId: number, brandId: number | null) {
