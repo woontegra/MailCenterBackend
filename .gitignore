@@ -11,5 +11,6 @@ build
 .next
 coverage
 logs
+backups/
 *.log
 /src/generated/prisma

@@ -11,6 +11,7 @@ import { createOutboundMessage } from './outboundMessageService';
 import { enqueueOutboundSend } from '../queues/mailQueue';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
 import { getOrCreateUnsubscribeUrl } from './campaignUnsubscribeService';
+import { humanizeCampaignRecipientError } from '../utils/humanizeEligibility';
 
 export type CampaignStatus =
   | 'DRAFT'
@@ -629,7 +630,9 @@ export async function syncCampaignRecipientFromOutbound(params: {
            attempt_count = attempt_count + 1,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1 AND tenant_id = $2`,
-      [rec.id, params.tenantId, sanitizeOutboundErrorMessage(params.errorMessage)]
+      [rec.id, params.tenantId, sanitizeOutboundErrorMessage(
+        humanizeCampaignRecipientError(params.errorMessage)
+      )],
     );
     await query(
       `UPDATE campaigns SET failed_count = failed_count + 1, updated_at = CURRENT_TIMESTAMP

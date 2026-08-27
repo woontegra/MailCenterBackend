@@ -3,6 +3,7 @@ import { campaignConfig, getCampaignForTenant, renderCampaignMessage } from './c
 import { createOutboundMessage } from './outboundMessageService';
 import { enqueueOutboundSend, enqueueCampaignDispatch } from '../queues/mailQueue';
 import { sanitizeOutboundErrorMessage } from '../config/outboundQueue';
+import { renderTemplateContent } from '../utils/templateRenderer';
 
 export async function processCampaignDispatchBatch(
   campaignId: number,
@@ -62,11 +63,68 @@ export async function processCampaignDispatchBatch(
       return { dispatched, done: true, paused: fresh?.status === 'PAUSED' };
     }
 
+    const channelType = String(campaign.channel_type || 'EMAIL').toUpperCase();
+
     try {
       const personalisation =
         typeof recipient.personalisation_data === 'object'
           ? recipient.personalisation_data
           : JSON.parse(String(recipient.personalisation_data || '{}'));
+
+      const idempotencyKey = `campaign:${campaignId}:recipient:${recipient.id}`;
+
+      if (channelType === 'WHATSAPP') {
+        const rendered = renderTemplateContent({
+          subject: '',
+          htmlContent: '',
+          plainTextContent: template.plain_text_content || template.content || '',
+          variables: template.variables || [],
+          values: personalisation,
+        });
+
+        const { row, created } = await createOutboundMessage({
+          tenantId,
+          brandId: campaign.brand_id ? Number(campaign.brand_id) : null,
+          channelType: 'WHATSAPP',
+          senderIdentityId: Number(campaign.sender_identity_id),
+          templateId: campaign.template_id,
+          recipientData: {
+            to: recipient.phone_normalized,
+            phone: recipient.phone_normalized,
+            contact_id: recipient.contact_id,
+            message_mode: 'TEMPLATE',
+            _campaign: { campaignId, recipientId: recipient.id },
+          },
+          subject: null,
+          htmlContent: null,
+          plainTextContent:
+            rendered.plainTextContent || template.provider_template_name || null,
+          messageContent:
+            rendered.plainTextContent || template.provider_template_name || null,
+          templateVariables: personalisation,
+          status: 'QUEUED',
+          idempotencyKey,
+          createdBy: campaign.created_by,
+          campaignId,
+          campaignRecipientId: recipient.id,
+        });
+
+        await query(
+          `UPDATE campaign_recipients
+           SET status = 'QUEUED',
+               outbound_message_id = $3,
+               queued_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND tenant_id = $2 AND status = 'SENDING'`,
+          [recipient.id, tenantId, row.id]
+        );
+
+        if (created) {
+          await enqueueOutboundSend(row.id, tenantId);
+          dispatched += 1;
+        }
+        continue;
+      }
 
       const rendered = await renderCampaignMessage({
         campaign,
@@ -77,8 +135,6 @@ export async function processCampaignDispatchBatch(
         recipientId: recipient.id,
         email: recipient.email,
       });
-
-      const idempotencyKey = `campaign:${campaignId}:recipient:${recipient.id}`;
 
       const { row, created } = await createOutboundMessage({
         tenantId,

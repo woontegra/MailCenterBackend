@@ -420,6 +420,31 @@ export type MetaCreatedMessageTemplate = {
   category: string | null;
 };
 
+export type WabaTemplateButtonInput =
+  | { type: 'URL'; text: string; url: string; urlExample?: string }
+  | { type: 'QUICK_REPLY'; text: string };
+
+function buildMetaButtonComponent(buttons: WabaTemplateButtonInput[]): Record<string, unknown> | null {
+  if (!Array.isArray(buttons) || buttons.length === 0) return null;
+  const mapped = buttons.slice(0, 3).map((btn) => {
+    if (btn.type === 'URL') {
+      const row: Record<string, unknown> = {
+        type: 'URL',
+        text: String(btn.text || '').trim().slice(0, 25),
+        url: String(btn.url || '').trim(),
+      };
+      const ex = String(btn.urlExample || btn.url || '').trim();
+      if (ex) row.example = [ex];
+      return row;
+    }
+    return {
+      type: 'QUICK_REPLY',
+      text: String(btn.text || '').trim().slice(0, 25),
+    };
+  });
+  return { type: 'BUTTONS', buttons: mapped };
+}
+
 /**
  * Create a message template on the WABA via Meta Graph API.
  * POST /{WABA_ID}/message_templates
@@ -433,6 +458,7 @@ export async function createWabaMessageTemplate(params: {
   bodyText: string;
   /** Ordered example values for {{1}}…{{n}} — required by Meta when placeholders exist. */
   bodyExamples?: string[];
+  buttons?: WabaTemplateButtonInput[];
   apiVersion?: string;
 }): Promise<MetaCreatedMessageTemplate> {
   const version = params.apiVersion || getMetaGraphApiVersion();
@@ -448,11 +474,14 @@ export async function createWabaMessageTemplate(params: {
   if (examples.length > 0) {
     bodyComponent.example = { body_text: [examples] };
   }
+  const components: Record<string, unknown>[] = [bodyComponent];
+  const buttonComponent = buildMetaButtonComponent(params.buttons || []);
+  if (buttonComponent) components.push(buttonComponent);
   const payload = {
     name: params.name,
     language: params.language,
     category: String(params.category).toUpperCase(),
-    components: [bodyComponent],
+    components,
   };
 
   const { ok, status, data, networkKind } = await graphJson(url, {

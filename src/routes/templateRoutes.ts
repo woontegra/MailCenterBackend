@@ -14,15 +14,9 @@ import {
   EditorDocument,
   hasRequiredBulkBlocks,
 } from '../utils/emailBlockCompiler';
-import { createWabaMessageTemplate } from '../services/metaEmbeddedSignupService';
-import { unpackWhatsAppCredentials, parseWhatsAppSettings } from '../whatsapp/whatsappCredentials';
+import { parseWhatsAppSettings } from '../whatsapp/whatsappCredentials';
+import { isWhatsAppTemplateCategory } from '../utils/whatsappTemplateName';
 import {
-  isValidWhatsAppTemplateName,
-  isWhatsAppTemplateCategory,
-  normalizeWhatsAppTemplateName,
-} from '../utils/whatsappTemplateName';
-import {
-  mapMetaStatusToApproval,
   safeTemplateSyncError,
   syncWhatsAppTemplatesForConnection,
 } from '../services/whatsappTemplateSyncService';
@@ -31,6 +25,7 @@ import {
   refreshLibraryTemplate,
   submitReadyTemplate,
 } from '../services/whatsappReadyTemplateLibraryService';
+import { submitCustomWhatsAppTemplate } from '../services/whatsappCustomTemplateService';
 
 const router = Router();
 router.use(authenticate);
@@ -491,34 +486,6 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
       if (!brand_id) {
         return badRequest(res, 'WhatsApp şablonu için marka (brand_id) zorunludur');
       }
-      const categoryRaw = String(
-        req.body?.category || req.body?.provider_template_category || ''
-      ).trim();
-      if (!isWhatsAppTemplateCategory(categoryRaw)) {
-        return badRequest(
-          res,
-          'WhatsApp kategori zorunludur (UTILITY, MARKETING veya AUTHENTICATION)'
-        );
-      }
-      const category = categoryRaw.toUpperCase();
-      const bodyText = String(
-        built.plainText || plain_text_content || content || ''
-      ).trim();
-      if (!bodyText) {
-        return badRequest(res, 'WhatsApp şablon gövde metni zorunludur');
-      }
-
-      providerName = normalizeWhatsAppTemplateName(
-        String(provider_template_name || name || '')
-      );
-      if (!isValidWhatsAppTemplateName(providerName)) {
-        return badRequest(
-          res,
-          'Provider template adı geçersiz (küçük harf, a-z, 0-9, alt çizgi)'
-        );
-      }
-      providerLanguage = String(provider_template_language || 'tr').trim().toLowerCase() || 'tr';
-
       const channelConnectionId = Number(
         req.body?.channelConnectionId || req.body?.channel_connection_id || ''
       );
@@ -526,62 +493,69 @@ router.post('/', requirePermission('TEMPLATE_MANAGE'), async (req: AuthRequest, 
         return badRequest(res, 'WhatsApp hesabı (channelConnectionId) zorunludur');
       }
 
-      const connectionResult = await query(
-        `SELECT * FROM channel_connections
-         WHERE id = $1
-           AND tenant_id = $2
-           AND brand_id = $3
-           AND channel_type = 'WHATSAPP'
-           AND status = 'ACTIVE'`,
-        [channelConnectionId, tenantId, brand_id]
-      );
-      if (connectionResult.rows.length === 0) {
+      const categoryRaw = String(
+        req.body?.category || req.body?.provider_template_category || ''
+      ).trim();
+      if (!isWhatsAppTemplateCategory(categoryRaw)) {
         return badRequest(
           res,
-          'Seçilen WhatsApp kanalı bulunamadı, pasif veya bu markaya ait değil'
+          'WhatsApp kategori zorunludur (UTILITY veya MARKETING)'
         );
       }
-      const connection = connectionResult.rows[0];
-      const creds = unpackWhatsAppCredentials(connection.encrypted_credentials);
-      const config = parseWhatsAppSettings(connection.settings);
-      if (!config.wabaId || !creds.accessToken) {
-        return badRequest(res, 'WhatsApp bağlantı kimlik bilgileri eksik');
-      }
 
-      let created;
+      const bodyText = String(
+        built.plainText || plain_text_content || content || ''
+      ).trim();
+
+      const websiteButtonRaw = req.body?.website_button || req.body?.websiteButton;
+      const websiteButton =
+        websiteButtonRaw &&
+        typeof websiteButtonRaw === 'object' &&
+        String(websiteButtonRaw.text || '').trim() &&
+        String(websiteButtonRaw.url || '').trim()
+          ? {
+              text: String(websiteButtonRaw.text).trim(),
+              url: String(websiteButtonRaw.url).trim(),
+            }
+          : null;
+
       try {
-        created = await createWabaMessageTemplate({
-          accessToken: creds.accessToken,
-          wabaId: config.wabaId,
-          name: providerName,
-          language: providerLanguage,
-          category,
+        const created = await submitCustomWhatsAppTemplate({
+          tenantId,
+          userId,
+          brandId: Number(brand_id),
+          connectionId: channelConnectionId,
+          displayName: String(name).trim(),
           bodyText,
-          apiVersion: config.apiVersion,
+          category: categoryRaw.toUpperCase(),
+          language: String(provider_template_language || 'tr'),
+          examples: Array.isArray(req.body?.examples) ? req.body.examples : null,
+          variables: Array.isArray(req.body?.variables) ? req.body.variables : null,
+          websiteButton,
+          includeOptOutQuickReply: Boolean(
+            req.body?.include_opt_out_quick_reply ?? req.body?.includeOptOutQuickReply
+          ),
+          providerTemplateName: provider_template_name || null,
         });
-      } catch (metaErr: any) {
-        // Do not create a local row when Meta rejects the template.
-        return badRequest(
-          res,
-          String(metaErr?.message || 'WhatsApp şablonu oluşturulamadı')
-        );
+        await afterCountResourceCreated(tenantId);
+        return res.status(201).json({
+          success: true,
+          data: created.template,
+          message: created.message,
+          providerName: created.providerName,
+        });
+      } catch (err: any) {
+        if (err.code === 'NOT_FOUND') return notFound(res, err.message);
+        if (
+          err.code === 'NO_ACTIVE_CONNECTION' ||
+          err.code === 'MISSING_CREDENTIALS' ||
+          err.code === 'BAD_REQUEST' ||
+          err.code === 'META_CREATE_FAILED'
+        ) {
+          return badRequest(res, String(err.message || 'WhatsApp şablonu oluşturulamadı'));
+        }
+        throw err;
       }
-
-      metaTemplateId = created.id;
-      metaCategory = created.category || category;
-      approval = mapMetaStatusToApproval(created.status || 'PENDING');
-      if (approval === 'UNKNOWN') approval = 'PENDING';
-      providerWabaId = config.wabaId;
-      savedChannelConnectionId = channelConnectionId;
-      componentsPayload = {
-        meta_template_id: metaTemplateId,
-        category: metaCategory,
-        status: String(created.status || 'PENDING').toUpperCase(),
-        components: [{ type: 'BODY', text: bodyText }],
-        created_via: 'META_GRAPH',
-        waba_id: providerWabaId,
-        last_synced_at: new Date().toISOString(),
-      };
     }
 
     const result = await query(
