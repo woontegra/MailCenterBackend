@@ -20,10 +20,12 @@ import {
   getOutboundMessageForTenant,
   markOutboundFailed,
   markOutboundSent,
+  markOutboundSkipped,
   recordOutboundRateHits,
   requeueOutboundMessage,
 } from './outboundMessageService';
-import { assertEmailNotBlocked } from '../utils/recipientEligibility';
+import { evaluateEmailPreSendGate } from './emailPreSendGateService';
+import { skipCampaignRecipientFromPreSendGate } from './campaignService';
 
 const smtpService = new SmtpService();
 
@@ -102,16 +104,54 @@ export async function processOutboundEmailMessage(
       throw Object.assign(new Error('Alıcı yok'), { code: 'NO_RECIPIENT' });
     }
 
-    const blocked = await assertEmailNotBlocked({
+    const preSendGate = await evaluateEmailPreSendGate({
       tenantId,
-      addresses: [...toList, ...ccList, ...bccList],
       brandId: claimed.brand_id ? Number(claimed.brand_id) : null,
+      campaignId: claimed.campaign_id ? Number(claimed.campaign_id) : null,
+      campaignRecipientId: claimed.campaign_recipient_id
+        ? Number(claimed.campaign_recipient_id)
+        : null,
+      conversationId: claimed.conversation_id ? Number(claimed.conversation_id) : null,
+      idempotencyKey: claimed.idempotency_key,
+      recipientData:
+        typeof claimed.recipient_data === 'object' && claimed.recipient_data
+          ? (claimed.recipient_data as Record<string, unknown>)
+          : {},
+      toAddresses: toList,
     });
-    if (!blocked.ok) {
-      throw Object.assign(
-        new Error(blocked.ok === false ? blocked.reason : 'Gönderim engellenmiş'),
-        { code: 'RECIPIENT_BLOCKED' }
-      );
+
+    if (preSendGate.allowed === false) {
+      const block = preSendGate;
+      await createOutboundAttempt({
+        tenantId,
+        messageId,
+        attemptNumber,
+        status: 'FAILED',
+        provider: 'smtp',
+        errorCode: block.code,
+        safeErrorMessage: block.userMessage,
+        completed: true,
+      });
+
+      await markOutboundSkipped({
+        messageId,
+        tenantId,
+        reasonCode: block.code,
+        reasonMessage: block.userMessage,
+      });
+
+      if (claimed.campaign_id && claimed.campaign_recipient_id) {
+        await skipCampaignRecipientFromPreSendGate({
+          tenantId,
+          campaignId: Number(claimed.campaign_id),
+          campaignRecipientId: Number(claimed.campaign_recipient_id),
+          userMessage: block.userMessage,
+          recipientStatus: block.recipientStatus,
+          skipReason: block.code,
+        });
+      }
+
+      return { outcome: 'skipped', reason: block.code };
     }
 
     if (claimed.campaign_id && claimed.campaign_recipient_id) {

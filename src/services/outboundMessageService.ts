@@ -445,6 +445,27 @@ export async function listOutboundAttempts(messageId: number, tenantId: number) 
   return result.rows;
 }
 
+async function releaseOutboundUsageReservation(messageId: number, tenantId: number) {
+  const row = await query(
+    `SELECT channel_type, usage_reserved FROM outbound_messages
+     WHERE id = $1 AND tenant_id = $2`,
+    [messageId, tenantId]
+  );
+  const message = row.rows[0];
+  if (!message?.usage_reserved) return;
+
+  try {
+    const { channelSendMetric, decrementCountUsage } = await import('./entitlementService');
+    await decrementCountUsage(tenantId, channelSendMetric(message.channel_type), 1);
+    await query(
+      `UPDATE outbound_messages SET usage_reserved = false WHERE id = $1 AND tenant_id = $2`,
+      [messageId, tenantId]
+    );
+  } catch {
+    /* non-fatal */
+  }
+}
+
 export async function cancelOutboundMessage(id: number, tenantId: number) {
   const result = await query(
     `UPDATE outbound_messages
@@ -454,19 +475,36 @@ export async function cancelOutboundMessage(id: number, tenantId: number) {
     [id, tenantId]
   );
   const row = result.rows[0] || null;
-  if (row && row.usage_reserved) {
-    try {
-      const { channelSendMetric, decrementCountUsage } = await import('./entitlementService');
-      await decrementCountUsage(tenantId, channelSendMetric(row.channel_type), 1);
-      await query(
-        `UPDATE outbound_messages SET usage_reserved = false WHERE id = $1 AND tenant_id = $2`,
-        [id, tenantId]
-      );
-    } catch {
-      /* non-fatal */
-    }
+  if (row) {
+    await releaseOutboundUsageReservation(id, tenantId);
   }
   return row;
+}
+
+/** Pre-send gate skip: no SMTP, no retry, release reserved quota. */
+export async function markOutboundSkipped(params: {
+  messageId: number;
+  tenantId: number;
+  reasonCode: string;
+  reasonMessage: string;
+}) {
+  await query(
+    `UPDATE outbound_messages
+     SET status = 'CANCELLED',
+         last_error_code = $3,
+         last_error_message = $4,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1 AND tenant_id = $2
+       AND status = 'PROCESSING'`,
+    [
+      params.messageId,
+      params.tenantId,
+      params.reasonCode.slice(0, 100),
+      params.reasonMessage.slice(0, 500),
+    ]
+  );
+
+  await releaseOutboundUsageReservation(params.messageId, params.tenantId);
 }
 
 export async function resetFailedForRetry(id: number, tenantId: number) {

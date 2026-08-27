@@ -624,6 +624,40 @@ export async function listCampaignRecipients(
   return result.rows;
 }
 
+export async function skipCampaignRecipientFromPreSendGate(params: {
+  tenantId: number;
+  campaignId: number;
+  campaignRecipientId: number;
+  userMessage: string;
+  recipientStatus: 'SKIPPED' | 'CANCELLED';
+  skipReason?: string | null;
+}) {
+  const result = await query(
+    `UPDATE campaign_recipients
+     SET status = $4,
+         skip_reason = $5,
+         last_error = $6,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1 AND tenant_id = $2 AND campaign_id = $3
+       AND status IN ('PENDING', 'QUEUED', 'SENDING')
+     RETURNING campaign_id`,
+    [
+      params.campaignRecipientId,
+      params.tenantId,
+      params.campaignId,
+      params.recipientStatus,
+      params.skipReason ? params.skipReason.slice(0, 80) : null,
+      params.userMessage.slice(0, 500),
+    ]
+  );
+
+  if (result.rows[0]) {
+    await maybeCompleteCampaign(params.tenantId, params.campaignId);
+  }
+
+  return result.rows[0] || null;
+}
+
 export async function syncCampaignRecipientFromOutbound(params: {
   tenantId: number;
   outboundMessageId: number;
