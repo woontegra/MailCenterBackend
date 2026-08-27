@@ -6,6 +6,7 @@ import { badRequest, notFound } from '../utils/channelPlatform';
 import {
   addContactListMembers,
   buildContactListSampleCsv,
+  buildContactListSampleXlsx,
   createContactList,
   deleteContactList,
   exportContactList,
@@ -17,8 +18,10 @@ import {
 } from '../services/contactListService';
 import {
   applyContactListImport,
+  detectImportMapping,
   exportContactListImportResults,
-  parseRecipientFile,
+  mergeImportMapping,
+  parseContactListFile,
   previewContactListImport,
 } from '../services/contactListImportService';
 import { previewListEmailAudience } from '../services/campaignRecipientResolver';
@@ -47,6 +50,16 @@ router.get('/sample-csv', requirePermission('CONTACT_VIEW'), (_req, res) => {
   const buf = buildContactListSampleCsv();
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="kisi-listesi-ornek.csv"');
+  res.send(buf);
+});
+
+router.get('/sample-xlsx', requirePermission('CONTACT_VIEW'), (_req, res) => {
+  const buf = buildContactListSampleXlsx();
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  res.setHeader('Content-Disposition', 'attachment; filename="kisi-listesi-ornek.xlsx"');
   res.send(buf);
 });
 
@@ -99,13 +112,22 @@ router.delete('/:id', requirePermission('CONTACT_MANAGE'), async (req: AuthReque
 
 router.get('/:id/members', requirePermission('CONTACT_VIEW'), async (req: AuthRequest, res: Response) => {
   try {
-    const rows = await listContactListMembers(req.user!.tenantId, Number(req.params.id), {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const result = await listContactListMembers(req.user!.tenantId, Number(req.params.id), {
       q: req.query.q ? String(req.query.q) : undefined,
-      limit: Math.min(200, Number(req.query.limit) || 50),
-      offset: Number(req.query.offset) || 0,
+      limit,
+      offset,
     });
-    if (!rows) return notFound(res);
-    res.json({ success: true, data: rows });
+    if (!result) return notFound(res);
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.total,
+      limit,
+      offset,
+      page: Math.floor(offset / limit) + 1,
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Üyeler alınamadı' });
   }
@@ -149,12 +171,18 @@ router.delete(
 
 router.get('/:id/export', requirePermission('CONTACT_VIEW'), async (req: AuthRequest, res: Response) => {
   try {
-    const buf = await exportContactList(req.user!.tenantId, Number(req.params.id));
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-    res.setHeader('Content-Disposition', `attachment; filename="kisi-listesi-${req.params.id}.xlsx"`);
+    const format = String(req.query.format || 'xlsx').toLowerCase() === 'csv' ? 'csv' : 'xlsx';
+    const buf = await exportContactList(req.user!.tenantId, Number(req.params.id), format);
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="kisi-listesi-${req.params.id}.csv"`);
+    } else {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="kisi-listesi-${req.params.id}.xlsx"`);
+    }
     res.send(buf);
   } catch (error: any) {
     res.status(error.status || 500).json({ success: false, error: error.message || 'Dışa aktarılamadı' });
@@ -168,8 +196,10 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       if (!req.file) return badRequest(res, 'Dosya gerekli');
-      const mapping = req.body.mapping ? JSON.parse(String(req.body.mapping)) : req.body;
-      const parsed = parseRecipientFile(req.file);
+      const parsed = parseContactListFile(req.file);
+      const userMapping = req.body.mapping ? JSON.parse(String(req.body.mapping)) : {};
+      const detected = detectImportMapping(parsed.headers);
+      const mapping = mergeImportMapping(userMapping, detected);
       const preview = await previewContactListImport({
         tenantId: req.user!.tenantId,
         listId: Number(req.params.id),
@@ -178,7 +208,16 @@ router.post(
         rows: parsed.rows,
         mapping,
       });
-      res.json({ success: true, data: { ...preview, headers: parsed.headers } });
+      res.json({
+        success: true,
+        data: {
+          ...preview,
+          headers: parsed.headers,
+          detected_mapping: detected,
+          applied_mapping: mapping,
+          file_kind: parsed.file_kind,
+        },
+      });
     } catch (error: any) {
       res.status(error.status || 500).json({
         success: false,

@@ -2,6 +2,12 @@ import * as XLSX from 'xlsx';
 import { getClient, query } from '../config/database';
 import { normalizeEmail, normalizePhone, getTenantDefaultCountryCode } from '../utils/contactNormalize';
 import { isValidEmailAddress, normalizeEmailAddress } from './suppressionService';
+import {
+  CONTACT_LIST_SAMPLE_COLUMNS,
+  formatContactListMemberLabel,
+} from './contactListImportMapping';
+
+export { formatContactListMemberLabel };
 
 export type ContactListRow = {
   id: number;
@@ -183,6 +189,32 @@ export async function listContactListMembers(
   if (!list) return null;
 
   const values: unknown[] = [tenantId, listId];
+  let whereSql = `
+    FROM contact_list_members clm
+    JOIN contacts c ON c.id = clm.contact_id AND c.tenant_id = clm.tenant_id
+    WHERE clm.tenant_id = $1 AND clm.list_id = $2
+  `;
+  if (params?.q?.trim()) {
+    values.push(`%${params.q.trim()}%`);
+    whereSql += ` AND (
+      c.first_name ILIKE $${values.length}
+      OR c.last_name ILIKE $${values.length}
+      OR c.company_name ILIKE $${values.length}
+      OR EXISTS (
+        SELECT 1 FROM contact_points cp
+        WHERE cp.tenant_id = c.tenant_id AND cp.contact_id = c.id
+          AND cp.is_active = true
+          AND (
+            (cp.channel_type = 'EMAIL' AND cp.normalized_value ILIKE $${values.length})
+            OR (cp.channel_type IN ('WHATSAPP', 'SMS') AND cp.normalized_value ILIKE $${values.length})
+          )
+      )
+    )`;
+  }
+
+  const countRes = await query(`SELECT COUNT(*)::int AS total ${whereSql}`, values);
+  const total = Number(countRes.rows[0]?.total || 0);
+
   let sql = `
     SELECT c.id, c.first_name, c.last_name, c.company_name, c.status,
            clm.added_at,
@@ -198,19 +230,23 @@ export async function listContactListMembers(
                AND cp.channel_type IN ('WHATSAPP', 'SMS') AND cp.is_active = true
              ORDER BY CASE cp.channel_type WHEN 'WHATSAPP' THEN 0 ELSE 1 END,
                       cp.is_primary DESC, cp.id LIMIT 1
-           ) AS phone
-    FROM contact_list_members clm
-    JOIN contacts c ON c.id = clm.contact_id AND c.tenant_id = clm.tenant_id
-    WHERE clm.tenant_id = $1 AND clm.list_id = $2
+           ) AS phone,
+           (
+             SELECT pref.status FROM communication_preferences pref
+             WHERE pref.tenant_id = c.tenant_id AND pref.contact_id = c.id
+               AND pref.channel_type = 'EMAIL'
+             ORDER BY pref.updated_at DESC NULLS LAST, pref.id DESC
+             LIMIT 1
+           ) AS email_permission,
+           (
+             SELECT pref.status FROM communication_preferences pref
+             WHERE pref.tenant_id = c.tenant_id AND pref.contact_id = c.id
+               AND pref.channel_type = 'WHATSAPP'
+             ORDER BY pref.updated_at DESC NULLS LAST, pref.id DESC
+             LIMIT 1
+           ) AS whatsapp_permission
+    ${whereSql}
   `;
-  if (params?.q?.trim()) {
-    values.push(`%${params.q.trim()}%`);
-    sql += ` AND (
-      c.first_name ILIKE $${values.length}
-      OR c.last_name ILIKE $${values.length}
-      OR c.company_name ILIKE $${values.length}
-    )`;
-  }
   sql += ` ORDER BY clm.added_at DESC, c.id DESC`;
   if (params?.limit) {
     values.push(params.limit);
@@ -221,7 +257,13 @@ export async function listContactListMembers(
     sql += ` OFFSET $${values.length}`;
   }
   const result = await query(sql, values);
-  return result.rows;
+  return {
+    rows: result.rows.map((m: any) => ({
+      ...m,
+      display_name: formatContactListMemberLabel(m),
+    })),
+    total,
+  };
 }
 
 export async function addContactListMembers(params: {
@@ -285,30 +327,126 @@ export async function removeContactListMember(tenantId: number, listId: number, 
   }
 }
 
-export async function exportContactList(tenantId: number, listId: number): Promise<Buffer> {
+function permissionExportLabel(status?: string | null): string {
+  if (status === 'OPTED_IN') return 'İzinli';
+  if (status === 'OPTED_OUT') return 'Red';
+  if (status === 'BLOCKED') return 'Engelli';
+  return 'Bilinmiyor';
+}
+
+async function loadExportMemberRows(tenantId: number, listId: number) {
   const list = await assertList(tenantId, listId);
   if (!list) throw Object.assign(new Error('Liste bulunamadı'), { status: 404 });
 
-  const members = await listContactListMembers(tenantId, listId, { limit: 10000 });
-  const rows = (members || []).map((m: any) => ({
-    'Kurum / Kişi adı': m.company_name || [m.first_name, m.last_name].filter(Boolean).join(' ') || '',
-    'Yetkili adı': [m.first_name, m.last_name].filter(Boolean).join(' '),
-    Eposta: m.email || '',
+  const batch = await listContactListMembers(tenantId, listId, { limit: 10000, offset: 0 });
+  return (batch?.rows || []).map((m: any) => ({
+    'Kurum / Kişi Adı': String(m.company_name || '').trim() || formatContactListMemberLabel(m),
+    'Yetkili Adı': [m.first_name, m.last_name].filter(Boolean).join(' ').trim(),
+    'E-posta': m.email || '',
     Telefon: m.phone || '',
+    Şehir: '',
+    Not: '',
+    'E-posta İzni': permissionExportLabel(m.email_permission),
+    'WhatsApp İzni': permissionExportLabel(m.whatsapp_permission),
+    'Liste Üyeliği': list.name,
   }));
+}
+
+function buildContactListExportCsv(rows: Record<string, string>[]): Buffer {
+  const headers = [
+    'Kurum / Kişi Adı',
+    'Yetkili Adı',
+    'E-posta',
+    'Telefon',
+    'Şehir',
+    'Not',
+    'E-posta İzni',
+    'WhatsApp İzni',
+    'Liste Üyeliği',
+  ];
+  const escape = (value: string) => {
+    const v = String(value ?? '');
+    if (/[",;\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+    return v;
+  };
+  const lines = [
+    headers.join(';'),
+    ...rows.map((row) => headers.map((h) => escape(String(row[h] ?? ''))).join(';')),
+  ];
+  return Buffer.from('\uFEFF' + lines.join('\r\n'), 'utf8');
+}
+
+const SAMPLE_ROW = {
+  'Kurum / Kişi Adı': 'Örnek Baro',
+  'Yetkili Adı': 'Ali Yılmaz',
+  'E-posta': 'ali@ornekbaro.org.tr',
+  Telefon: '+905551112233',
+  Şehir: 'İstanbul',
+  Not: 'Örnek not',
+  'E-posta İzni': 'evet',
+  'WhatsApp İzni': 'hayır',
+};
+
+export async function exportContactList(
+  tenantId: number,
+  listId: number,
+  format: 'xlsx' | 'csv' = 'xlsx'
+): Promise<Buffer> {
+  const list = await assertList(tenantId, listId);
+  if (!list) throw Object.assign(new Error('Liste bulunamadı'), { status: 404 });
+
+  const rows = await loadExportMemberRows(tenantId, listId);
+  if (format === 'csv') {
+    return buildContactListExportCsv(rows);
+  }
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [
+    { wch: 28 },
+    { wch: 22 },
+    { wch: 28 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 18 },
+  ];
   XLSX.utils.book_append_sheet(wb, ws, list.name.slice(0, 31));
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
 export function buildContactListSampleCsv(): Buffer {
-  const csv =
-    'Kurum / Kişi adı,Yetkili adı,E-posta,Telefon,Şehir,Not,E-posta izni,WhatsApp izni\n' +
-    'Örnek Baro,Ali Yılmaz,ali@ornekbaro.org,+905551112233,İstanbul,Not,evet,hayır\n' +
-    'Serbest Muhasebeci,Ayşe Demir,ayse@ornek.com,05552223344,Ankara,,evet,evet\n';
-  return Buffer.from('\uFEFF' + csv, 'utf8');
+  const headers = [...CONTACT_LIST_SAMPLE_COLUMNS];
+  const escape = (value: string) => {
+    const v = String(value ?? '');
+    if (/[",;\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+    return v;
+  };
+  const line = (row: Record<string, string>) =>
+    headers.map((h) => escape(String(row[h] ?? ''))).join(';');
+  return Buffer.from(
+    '\uFEFF' + headers.join(';') + '\r\n' + line(SAMPLE_ROW as Record<string, string>) + '\r\n',
+    'utf8'
+  );
+}
+
+export function buildContactListSampleXlsx(): Buffer {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet([SAMPLE_ROW]);
+  ws['!cols'] = [
+    { wch: 24 },
+    { wch: 18 },
+    { wch: 28 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 16 },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws, 'Ornek');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
 export async function resolveListContactIds(tenantId: number, listIds: number[]): Promise<number[]> {

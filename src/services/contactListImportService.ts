@@ -1,21 +1,16 @@
 import { getClient, query } from '../config/database';
 import { normalizeContactPointValue, getTenantDefaultCountryCode } from '../utils/contactNormalize';
-import { parseRecipientFile } from './campaignImportService';
 import { isValidEmailAddress, normalizeEmailAddress } from './suppressionService';
 import { parsePermissionCell } from './contactListService';
+import { parseContactListFile } from './contactListFileParser';
+import {
+  detectImportMapping,
+  mergeImportMapping,
+  type ListImportMapping,
+} from './contactListImportMapping';
 
-export type ListImportMapping = {
-  organization_name?: string;
-  contact_name?: string;
-  first_name?: string;
-  last_name?: string;
-  email?: string;
-  phone?: string;
-  city?: string;
-  notes?: string;
-  email_permission?: string;
-  whatsapp_permission?: string;
-};
+export type { ListImportMapping };
+export { detectImportMapping, mergeImportMapping, parseContactListFile };
 
 function cell(row: Record<string, string>, key?: string) {
   if (!key) return '';
@@ -241,6 +236,58 @@ export async function previewContactListImport(params: {
   }
 }
 
+async function enrichExistingContact(
+  client: any,
+  params: {
+    tenantId: number;
+    contactId: number;
+    organizationName: string;
+    firstName: string;
+    lastName: string;
+    notes: string;
+    city: string;
+  }
+) {
+  const cur = await client.query(
+    `SELECT first_name, last_name, company_name, notes
+     FROM contacts WHERE id = $1 AND tenant_id = $2`,
+    [params.contactId, params.tenantId]
+  );
+  if (cur.rows.length === 0) return;
+
+  const row = cur.rows[0];
+  const fields: string[] = [];
+  const values: unknown[] = [params.contactId, params.tenantId];
+
+  const setIfEmpty = (column: string, current: unknown, next: string) => {
+    if (String(current || '').trim()) return;
+    if (!String(next || '').trim()) return;
+    values.push(next.trim());
+    fields.push(`${column} = $${values.length}`);
+  };
+
+  setIfEmpty('company_name', row.company_name, params.organizationName);
+  setIfEmpty('first_name', row.first_name, params.firstName);
+  setIfEmpty('last_name', row.last_name, params.lastName);
+
+  const noteParts = [params.city, params.notes].filter((v) => String(v || '').trim());
+  const combinedNotes = noteParts.join(' — ');
+  if (combinedNotes) {
+    const existingNotes = String(row.notes || '').trim();
+    if (!existingNotes) {
+      values.push(combinedNotes);
+      fields.push(`notes = $${values.length}`);
+    }
+  }
+
+  if (fields.length === 0) return;
+  fields.push('updated_at = CURRENT_TIMESTAMP');
+  await client.query(
+    `UPDATE contacts SET ${fields.join(', ')} WHERE id = $1 AND tenant_id = $2`,
+    values
+  );
+}
+
 async function upsertPreference(
   client: any,
   params: {
@@ -338,6 +385,16 @@ export async function applyContactListImport(params: {
             [params.tenantId, contactId, data.phone_normalized, data.phone_normalized]
           );
         }
+      } else {
+        await enrichExistingContact(client, {
+          tenantId: params.tenantId,
+          contactId,
+          organizationName: String(data.organization_name || ''),
+          firstName: String(data.first_name || ''),
+          lastName: String(data.last_name || ''),
+          notes: String(data.notes || ''),
+          city: String(data.city || ''),
+        });
       }
 
       if (data.email_permission && data.email_permission !== 'UNKNOWN') {
@@ -430,5 +487,3 @@ export async function exportContactListImportResults(
   XLSX.utils.book_append_sheet(wb, ws, 'Import sonuçları');
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
-
-export { parseRecipientFile };
