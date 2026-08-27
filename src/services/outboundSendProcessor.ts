@@ -114,6 +114,23 @@ export async function processOutboundEmailMessage(
       );
     }
 
+    if (claimed.campaign_id && claimed.campaign_recipient_id) {
+      try {
+        const { recordDeliveryLifecycleEvent } = await import('./emailTrackingEventService');
+        await recordDeliveryLifecycleEvent({
+          tenantId,
+          brandId: claimed.brand_id ? Number(claimed.brand_id) : null,
+          campaignId: Number(claimed.campaign_id),
+          campaignRecipientId: Number(claimed.campaign_recipient_id),
+          outboundMessageId: messageId,
+          eventType: 'SEND_ATTEMPTED',
+          dedupeSuffix: String(attemptNumber),
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
+
     const subject = String(claimed.subject || '');
     assertNoHeaderInjection(subject, 'subject');
     const replyTo = recipients.replyTo ? String(recipients.replyTo) : resolved.reply_to || undefined;
@@ -185,6 +202,23 @@ export async function processOutboundEmailMessage(
       providerMessageId: result.messageId || null,
     });
 
+    if (claimed.campaign_id && claimed.campaign_recipient_id) {
+      try {
+        const { handleCampaignRecipientSmtpAccepted } = await import('./emailBounceService');
+        await handleCampaignRecipientSmtpAccepted({
+          tenantId,
+          brandId: claimed.brand_id ? Number(claimed.brand_id) : null,
+          campaignId: Number(claimed.campaign_id),
+          campaignRecipientId: Number(claimed.campaign_recipient_id),
+          outboundMessageId: messageId,
+          contactId: (claimed.recipient_data?.contact_id as number) || null,
+          providerMessageId: result.messageId || null,
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
+
     await createOutboundAttempt({
       tenantId,
       messageId,
@@ -246,6 +280,24 @@ export async function processOutboundEmailMessage(
       errorCode: classified.code,
       errorMessage: safeMessage,
     });
+
+    if (claimed.campaign_id && claimed.campaign_recipient_id) {
+      try {
+        const { handleCampaignRecipientDeliveryFailure } = await import('./emailBounceService');
+        await handleCampaignRecipientDeliveryFailure({
+          tenantId,
+          campaignId: Number(claimed.campaign_id),
+          campaignRecipientId: Number(claimed.campaign_recipient_id),
+          outboundMessageId: messageId,
+          email: String(claimed.recipient_data?.to || '').split(',')[0]?.trim() || null,
+          errorCode: classified.code,
+          errorMessage: safeMessage,
+          attemptCount: attemptNumber,
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
 
     return {
       outcome: 'failed',

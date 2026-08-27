@@ -110,6 +110,17 @@ export async function unsubscribeByToken(params: {
     ]
   );
 
+  try {
+    const { recordUnsubscribedTracking } = await import('./emailTrackingEventService');
+    await recordUnsubscribedTracking({
+      tenantId: Number(row.tenant_id),
+      campaignId: Number(row.campaign_id),
+      campaignRecipientId: Number(row.campaign_recipient_id),
+    });
+  } catch {
+    /* non-fatal */
+  }
+
   return {
     ok: true as const,
     maskedEmail: maskEmail(row.email),

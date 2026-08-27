@@ -48,6 +48,7 @@ const migrations = [
   'whatsapp_ready_template_library_upgrade.sql',
   'whatsapp_bulk_campaigns_upgrade.sql',
   'contact_lists_upgrade.sql',
+  'email_tracking_upgrade.sql',
   'admin_platform_upgrade.sql',
   'admin_control_center_upgrade.sql',
 ];

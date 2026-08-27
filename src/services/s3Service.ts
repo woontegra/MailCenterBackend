@@ -101,6 +101,24 @@ export class S3Service {
       })
     );
   }
+
+  async getObjectBuffer(key: string): Promise<Buffer> {
+    const response = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      })
+    );
+    const chunks: Buffer[] = [];
+    const body = response.Body as AsyncIterable<Uint8Array> | undefined;
+    if (!body || typeof (body as any)[Symbol.asyncIterator] !== 'function') {
+      throw new Error('Dosya içeriği okunamadı');
+    }
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
 }
 
 export default new S3Service();

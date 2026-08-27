@@ -126,6 +126,7 @@ import whatsappBulkCampaignRoutes from './routes/whatsappBulkCampaignRoutes';
 import segmentRoutes from './routes/segmentRoutes';
 import suppressionRoutes from './routes/suppressionRoutes';
 import unsubscribeRoutes from './routes/unsubscribeRoutes';
+import emailTrackingRoutes from './routes/emailTrackingRoutes';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
@@ -182,6 +183,7 @@ app.use('/api/platform-admin', platformAdminRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/inbox', inboxGroupedRoutes);
 app.use('/unsubscribe', unsubscribeRoutes);
+app.use('/t', emailTrackingRoutes);
 
 app.get('/api/health', async (req, res) => {
   let database: 'ok' | 'error' = 'error';

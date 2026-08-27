@@ -479,6 +479,35 @@ export async function launchCampaign(params: {
 
   await snapshotCampaignRecipients(params.tenantId, params.campaignId);
 
+  const campaignRow = await getCampaignForTenant(params.tenantId, params.campaignId);
+  if (
+    campaignRow &&
+    String(campaignRow.channel_type || 'EMAIL').toUpperCase() === 'EMAIL' &&
+    campaignRow.template_id
+  ) {
+    const tplRes = await query(`SELECT content FROM templates WHERE id = $1 AND tenant_id = $2`, [
+      campaignRow.template_id,
+      params.tenantId,
+    ]);
+    const html = String(tplRes.rows[0]?.content || '');
+    const {
+      ensureCampaignTrackingSettings,
+      registerCampaignLinksFromHtml,
+    } = await import('./emailTrackingInjectService');
+    await ensureCampaignTrackingSettings({
+      tenantId: params.tenantId,
+      campaignId: params.campaignId,
+      utmCampaign: campaignRow.name,
+    });
+    if (html.trim()) {
+      await registerCampaignLinksFromHtml({
+        tenantId: params.tenantId,
+        campaignId: params.campaignId,
+        html,
+      });
+    }
+  }
+
   let status: CampaignStatus = 'QUEUED';
   let scheduledAt: string | null = null;
 

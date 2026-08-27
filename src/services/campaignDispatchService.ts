@@ -136,6 +136,17 @@ export async function processCampaignDispatchBatch(
         email: recipient.email,
       });
 
+      const { applyEmailTrackingToHtml } = await import('./emailTrackingInjectService');
+      const { recordDeliveryLifecycleEvent } = await import('./emailTrackingEventService');
+      const htmlContent = rendered.htmlContent
+        ? await applyEmailTrackingToHtml({
+            tenantId,
+            campaignId,
+            campaignRecipientId: recipient.id,
+            html: rendered.htmlContent,
+          })
+        : rendered.htmlContent;
+
       const { row, created } = await createOutboundMessage({
         tenantId,
         brandId: campaign.brand_id ? Number(campaign.brand_id) : null,
@@ -149,7 +160,7 @@ export async function processCampaignDispatchBatch(
           _campaign: { campaignId, recipientId: recipient.id },
         },
         subject: rendered.subject,
-        htmlContent: rendered.htmlContent,
+        htmlContent,
         plainTextContent: rendered.plainTextContent,
         templateVariables: personalisation,
         status: 'QUEUED',
@@ -170,6 +181,15 @@ export async function processCampaignDispatchBatch(
       );
 
       if (created) {
+        await recordDeliveryLifecycleEvent({
+          tenantId,
+          brandId: campaign.brand_id ? Number(campaign.brand_id) : null,
+          campaignId,
+          campaignRecipientId: recipient.id,
+          outboundMessageId: row.id,
+          contactId: recipient.contact_id ? Number(recipient.contact_id) : null,
+          eventType: 'QUEUED',
+        });
         await enqueueOutboundSend(row.id, tenantId);
         dispatched += 1;
       }

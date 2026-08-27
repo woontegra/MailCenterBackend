@@ -23,6 +23,7 @@ import {
   parseRecipientFile,
   previewRecipientImport,
 } from '../services/campaignImportService';
+import campaignAnalyticsRoutes from './campaignAnalyticsRoutes';
 
 const router = Router();
 const upload = multer({
@@ -255,6 +256,8 @@ router.post('/:id/cancel', requirePermission('EMAIL_SEND'), async (req: AuthRequ
     res.status(status).json({ success: false, error: error.message || 'İptal edilemedi' });
   }
 });
+
+router.use('/:id', campaignAnalyticsRoutes);
 
 router.get('/:id/recipients', requirePermission('OUTBOUND_VIEW'), async (req: AuthRequest, res: Response) => {
   try {
