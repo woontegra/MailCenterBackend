@@ -61,9 +61,11 @@ CREATE TABLE IF NOT EXISTS email_tracking_keys (
   token_hash VARCHAR(64) NOT NULL,
   expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (token_hash),
-  UNIQUE (campaign_recipient_id, purpose, COALESCE(purpose_ref_id, 0))
+  UNIQUE (token_hash)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_email_tracking_keys_recipient_purpose
+  ON email_tracking_keys(campaign_recipient_id, purpose, COALESCE(purpose_ref_id, 0));
 
 CREATE INDEX IF NOT EXISTS idx_email_tracking_keys_recipient
   ON email_tracking_keys(campaign_recipient_id, purpose);
