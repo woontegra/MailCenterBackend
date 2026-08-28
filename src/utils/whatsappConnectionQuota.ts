@@ -19,10 +19,13 @@ export function shouldConsumeWhatsAppConnectionQuota(params: {
   return !isWhatsAppQuotaConsumingStatus(params.previousStatus);
 }
 
-/** Live count of tenant WhatsApp connections that consume plan quota. */
+/** Live count of distinct physical WhatsApp lines (by phone_number_id) that consume plan quota. */
 export async function countWhatsAppConnectionsTowardQuota(tenantId: number): Promise<number> {
   const result = await query(
-    `SELECT COUNT(*)::int AS c
+    `SELECT COUNT(DISTINCT COALESCE(
+       NULLIF(TRIM(COALESCE(settings->>'phone_number_id', settings->>'phoneNumberId')), ''),
+       'conn:' || id::text
+     ))::int AS c
      FROM channel_connections
      WHERE tenant_id = $1
        AND channel_type = 'WHATSAPP'

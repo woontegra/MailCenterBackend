@@ -47,6 +47,8 @@ const migrations = [
   'whatsapp_template_waba_upgrade.sql',
   'whatsapp_ready_template_library_upgrade.sql',
   'whatsapp_bulk_campaigns_upgrade.sql',
+  'whatsapp_connection_brand_share_upgrade.sql',
+  'whatsapp_template_brand_scope_upgrade.sql',
   'contact_lists_upgrade.sql',
   'email_tracking_upgrade.sql',
   'admin_platform_upgrade.sql',

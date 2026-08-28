@@ -70,13 +70,17 @@ function main() {
   );
 
   // 4) Tenant isolation of the live counter (SQL always scopes by tenant_id)
-  const countSql = `SELECT COUNT(*)::int AS c
+  const countSql = `SELECT COUNT(DISTINCT COALESCE(
+       NULLIF(TRIM(COALESCE(settings->>'phone_number_id', settings->>'phoneNumberId')), ''),
+       'conn:' || id::text
+     ))::int AS c
      FROM channel_connections
      WHERE tenant_id = $1
        AND channel_type = 'WHATSAPP'
        AND UPPER(COALESCE(status, '')) = 'ACTIVE'`;
   assert.ok(countSql.includes('tenant_id = $1'), 'quota count must be tenant-scoped');
   assert.ok(countSql.includes("= 'ACTIVE'"), 'quota count must only include ACTIVE');
+  assert.ok(countSql.includes('COUNT(DISTINCT'), 'quota counts distinct physical lines');
   assert.ok(!countSql.includes('brand_id'), 'tenant quota is not brand-scoped');
 
   // Same PNID reactivation with only DISABLED present: used=0, consume=yes → ok under limit 1

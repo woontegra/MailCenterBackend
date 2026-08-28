@@ -93,7 +93,17 @@ router.get('/', requirePermission('TEMPLATE_VIEW'), async (req: AuthRequest, res
         )
       )`;
       if (brand_id && Number(brand_id) !== Number(conn.rows[0].brand_id)) {
-        return badRequest(res, 'Şablon markası ile bağlantı markası uyuşmuyor');
+        const { brandCanUseConnection } = await import(
+          '../services/channelConnectionBrandShareService'
+        );
+        const allowed = await brandCanUseConnection(
+          tenantId,
+          Number(brand_id),
+          connectionId
+        );
+        if (!allowed) {
+          return badRequest(res, 'Şablon markası ile bağlantı markası uyuşmuyor');
+        }
       }
     }
 
@@ -211,9 +221,16 @@ router.post(
       if (!connectionId || Number.isNaN(connectionId)) {
         return badRequest(res, 'WhatsApp hesabı (channelConnectionId) zorunludur');
       }
+      const requestingBrandId = req.body?.brand_id
+        ? Number(req.body.brand_id)
+        : req.body?.brandId
+          ? Number(req.body.brandId)
+          : null;
       const result = await syncWhatsAppTemplatesForConnection({
         tenantId: req.user!.tenantId,
         connectionId,
+        requestingBrandId:
+          requestingBrandId && !Number.isNaN(requestingBrandId) ? requestingBrandId : null,
       });
       res.json({
         success: true,

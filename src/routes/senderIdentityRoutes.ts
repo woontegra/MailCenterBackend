@@ -88,8 +88,19 @@ router.post('/', requirePermission('SENDER_IDENTITY_MANAGE'), async (req: AuthRe
     if (connectionResult.rows.length === 0) return notFound(res);
 
     const connection = connectionResult.rows[0];
-    if (Number(connection.brand_id) !== Number(brand_id)) {
-      return badRequest(res, 'channel_connection_id does not belong to the selected brand');
+    const targetBrandId = Number(brand_id);
+    if (Number(connection.brand_id) !== targetBrandId) {
+      const { brandCanUseConnection } = await import(
+        '../services/channelConnectionBrandShareService'
+      );
+      const allowed = await brandCanUseConnection(
+        tenantId,
+        targetBrandId,
+        Number(channel_connection_id)
+      );
+      if (!allowed) {
+        return badRequest(res, 'channel_connection_id does not belong to the selected brand');
+      }
     }
 
     let resolvedSenderValue = String(sender_value).trim();

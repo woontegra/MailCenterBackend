@@ -254,6 +254,21 @@ export async function resolveEligibleWhatsAppSenderIdentity(
       code: 'SENDER_NOT_ELIGIBLE',
     });
   }
+
+  if (brandId != null) {
+    const { brandCanUseConnection } = await import('../services/channelConnectionBrandShareService');
+    const connectionAllowed = await brandCanUseConnection(
+      tenantId,
+      Number(brandId),
+      Number(row.channel_connection_id)
+    );
+    if (!connectionAllowed) {
+      throw Object.assign(new Error('Gönderici kimliği marka ile uyuşmuyor'), {
+        code: 'SENDER_NOT_ELIGIBLE',
+      });
+    }
+  }
+
   if (!row.sender_active) {
     throw Object.assign(new Error('Sender identity is inactive'), {
       code: 'SENDER_NOT_ELIGIBLE',
@@ -300,7 +315,8 @@ export async function resolveEligibleWhatsAppSenderIdentity(
  */
 export async function ensureWhatsAppSenderForConnection(
   connectionId: number,
-  tenantId: number
+  tenantId: number,
+  brandId?: number | null
 ): Promise<{
   sender_identity_id: number;
   channel_connection_id: number;
@@ -330,6 +346,17 @@ export async function ensureWhatsAppSenderForConnection(
     throw Object.assign(new Error('WhatsApp kimlik bilgileri eksik'), { code: 'SENDER_NOT_ELIGIBLE' });
   }
 
+  const targetBrandId = brandId != null ? Number(brandId) : Number(row.brand_id);
+  if (targetBrandId !== Number(row.brand_id)) {
+    const { brandCanUseConnection } = await import('../services/channelConnectionBrandShareService');
+    const allowed = await brandCanUseConnection(tenantId, targetBrandId, connectionId);
+    if (!allowed) {
+      throw Object.assign(new Error('WhatsApp hattı bu markada kullanılamaz'), {
+        code: 'SENDER_NOT_ELIGIBLE',
+      });
+    }
+  }
+
   const settings =
     row.settings && typeof row.settings === 'object' && !Array.isArray(row.settings)
       ? row.settings
@@ -347,13 +374,13 @@ export async function ensureWhatsAppSenderForConnection(
     `SELECT id, display_name, sender_value
      FROM sender_identities
      WHERE tenant_id = $1 AND channel_connection_id = $2 AND channel_type = 'WHATSAPP'
+       AND brand_id = $3
      ORDER BY id ASC
      LIMIT 1`,
-    [tenantId, connectionId]
+    [tenantId, connectionId, targetBrandId]
   );
 
   if (existing.rows[0]) {
-    // Reactivate / verify if needed so compose can send
     await query(
       `UPDATE sender_identities
        SET is_active = true,
@@ -367,7 +394,7 @@ export async function ensureWhatsAppSenderForConnection(
     return {
       sender_identity_id: existing.rows[0].id,
       channel_connection_id: connectionId,
-      brand_id: row.brand_id,
+      brand_id: targetBrandId,
       display_name: displayName,
       sender_value: senderValue,
       business_phone: businessPhone || null,
@@ -382,13 +409,13 @@ export async function ensureWhatsAppSenderForConnection(
         is_default, is_active, is_verified)
      VALUES ($1,$2,$3,'WHATSAPP',$4,$5,true,true,true)
      RETURNING id`,
-    [tenantId, row.brand_id, connectionId, displayName, senderValue]
+    [tenantId, targetBrandId, connectionId, displayName, senderValue]
   );
 
   return {
     sender_identity_id: inserted.rows[0].id,
     channel_connection_id: connectionId,
-    brand_id: row.brand_id,
+    brand_id: targetBrandId,
     display_name: displayName,
     sender_value: senderValue,
     business_phone: businessPhone || null,

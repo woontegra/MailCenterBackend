@@ -14,6 +14,12 @@ import {
   extractMetaGraphFailure,
   formatMetaGraphUserMessage,
 } from '../services/metaEmbeddedSignupService';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+function read(relPath: string): string {
+  return readFileSync(join(__dirname, '..', relPath), 'utf8');
+}
 
 function main() {
   assert.strictEqual(
@@ -91,11 +97,12 @@ function main() {
     undefined
   );
 
-  // Tenant/brand isolation: query requires id + tenant + brand + ACTIVE
+  // Tenant/brand isolation: connection resolved via brandCanUseConnection + tenant + ACTIVE
   const sqlGuard =
-    "id = $1 AND tenant_id = $2 AND brand_id = $3 AND channel_type = 'WHATSAPP' AND status = 'ACTIVE'";
+    "id = $1 AND tenant_id = $2 AND channel_type = 'WHATSAPP' AND status = 'ACTIVE'";
   assert.ok(sqlGuard.includes('tenant_id'));
   assert.ok(sqlGuard.includes("status = 'ACTIVE'"));
+  assert.ok(read('services/whatsappReadyTemplateLibraryService.ts').includes('brandCanUseConnection'));
 
   // Frontend payload must not include secrets
   const fePayload = { brand_id: 6, channelConnectionId: 10, category: 'UTILITY' };

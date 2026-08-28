@@ -32,6 +32,7 @@ import {
   getMetaAppSecret,
   getMetaWhatsAppWebhookVerifyToken,
 } from '../config/metaWhatsAppConfig';
+import { brandAccessSql } from '../services/channelConnectionBrandShareService';
 
 const router = Router();
 router.use(authenticate);
@@ -157,24 +158,45 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const tenantId = req.user!.tenantId;
     const { brand_id, channel_type, status } = req.query;
 
-    const params: unknown[] = [tenantId];
     let sql = `
       SELECT cc.*, b.name AS brand_name, b.accent_color AS brand_accent_color,
+             owner_b.name AS owner_brand_name,
              ma.email AS mail_account_email,
+             CASE
+               WHEN $1::int IS NOT NULL AND cc.brand_id <> $1::int
+                 AND EXISTS (
+                   SELECT 1 FROM channel_connection_brand_shares sh
+                   WHERE sh.tenant_id = cc.tenant_id
+                     AND sh.channel_connection_id = cc.id
+                     AND sh.brand_id = $1::int
+                 )
+               THEN true
+               ELSE false
+             END AS is_shared,
              (
                SELECT si.id FROM sender_identities si
                WHERE si.channel_connection_id = cc.id AND si.tenant_id = cc.tenant_id
-               ORDER BY si.id ASC LIMIT 1
-             ) AS sender_identity_id
+                 AND ($1::int IS NULL OR si.brand_id = $1::int)
+               ORDER BY si.is_default DESC, si.id ASC LIMIT 1
+             ) AS sender_identity_id,
+             COALESCE((
+               SELECT json_agg(sh.brand_id ORDER BY sh.brand_id)
+               FROM channel_connection_brand_shares sh
+               WHERE sh.tenant_id = cc.tenant_id AND sh.channel_connection_id = cc.id
+             ), '[]'::json) AS shared_brand_ids
       FROM channel_connections cc
       JOIN brands b ON b.id = cc.brand_id AND b.tenant_id = cc.tenant_id
+      JOIN brands owner_b ON owner_b.id = cc.brand_id AND owner_b.tenant_id = cc.tenant_id
       LEFT JOIN mail_accounts ma ON ma.id = cc.mail_account_id AND ma.tenant_id = cc.tenant_id
-      WHERE cc.tenant_id = $1
+      WHERE cc.tenant_id = $2
     `;
+
+    const brandFilterId = brand_id ? Number(brand_id) : null;
+    const params: unknown[] = [brandFilterId, tenantId];
 
     if (brand_id) {
       params.push(brand_id);
-      sql += ` AND cc.brand_id = $${params.length}`;
+      sql += ` AND ${brandAccessSql(params.length)}`;
     }
     if (channel_type) {
       if (!isChannelType(channel_type)) {
@@ -375,6 +397,25 @@ router.post('/', requirePermission('CHANNEL_MANAGE'), async (req: AuthRequest, r
         })
       ) {
         if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
+      }
+
+      if (phoneNumberId) {
+        const tenantDup = await query(
+          `SELECT id, brand_id FROM channel_connections
+           WHERE tenant_id = $1 AND channel_type = 'WHATSAPP'
+             AND (
+               settings->>'phone_number_id' = $2
+               OR settings->>'phoneNumberId' = $2
+             )
+           LIMIT 1`,
+          [tenantId, phoneNumberId]
+        );
+        if (tenantDup.rows[0]) {
+          return conflict(
+            res,
+            'Bu WhatsApp hattı kiracınızda zaten bağlı. Yeni bağlantı yerine mevcut hattı markanızda kullanın.'
+          );
+        }
       }
     }
 
@@ -681,7 +722,8 @@ router.post(
       );
       let ensured;
       try {
-        ensured = await ensureWhatsAppSenderForConnection(id, tenantId);
+        const targetBrandId = req.body?.brand_id ? Number(req.body.brand_id) : null;
+        ensured = await ensureWhatsAppSenderForConnection(id, tenantId, targetBrandId);
       } catch (error: any) {
         return respondSenderResolveError(res, error);
       }
@@ -691,6 +733,83 @@ router.post(
     } catch (error) {
       console.error('Ensure WhatsApp sender error');
       res.status(500).json({ error: 'WhatsApp göndericisi hazırlanamadı' });
+    }
+  }
+);
+
+router.get('/whatsapp/shareable-lines', async (req: AuthRequest, res: Response) => {
+  try {
+    const brandId = Number(req.query.brand_id || req.query.brandId || '');
+    if (!brandId) return badRequest(res, 'brand_id gerekli');
+    const { listShareableWhatsAppLines } = await import(
+      '../services/channelConnectionBrandShareService'
+    );
+    const brandOk = await query(`SELECT id FROM brands WHERE id = $1 AND tenant_id = $2`, [
+      brandId,
+      req.user!.tenantId,
+    ]);
+    if (brandOk.rows.length === 0) return notFound(res);
+    const lines = await listShareableWhatsAppLines(req.user!.tenantId, brandId);
+    res.json({
+      success: true,
+      data: lines.map((line) => ({
+        id: line.id,
+        label: line.label,
+        owner_brand_name: line.owner_brand_name,
+        phone_number: line.phone_number,
+      })),
+    });
+  } catch (error) {
+    console.error('shareable-lines error', error);
+    res.status(500).json({ error: 'Paylaşılabilir hatlar alınamadı' });
+  }
+});
+
+router.post(
+  '/:id/share-with-brand',
+  requirePermission('CHANNEL_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const brandId = Number(req.body?.brand_id || req.body?.brandId || '');
+      if (!brandId) return badRequest(res, 'brand_id gerekli');
+      const { shareWhatsAppConnectionWithBrand } = await import(
+        '../services/channelConnectionBrandShareService'
+      );
+      const result = await shareWhatsAppConnectionWithBrand({
+        tenantId: req.user!.tenantId,
+        connectionId: Number(req.params.id),
+        brandId,
+        userId: req.user!.userId,
+      });
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      res.status(error.status || 500).json({
+        success: false,
+        error: error.message || 'Hat paylaşılamadı',
+      });
+    }
+  }
+);
+
+router.delete(
+  '/:id/share-with-brand/:brandId',
+  requirePermission('CHANNEL_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { unshareWhatsAppConnectionFromBrand } = await import(
+        '../services/channelConnectionBrandShareService'
+      );
+      const result = await unshareWhatsAppConnectionFromBrand({
+        tenantId: req.user!.tenantId,
+        connectionId: Number(req.params.id),
+        brandId: Number(req.params.brandId),
+      });
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      res.status(error.status || 500).json({
+        success: false,
+        error: error.message || 'Paylaşım kaldırılamadı',
+      });
     }
   }
 );

@@ -412,6 +412,7 @@ export type MetaMessageTemplate = {
   status: string;
   components: unknown;
   rejectedReason: string | null;
+  qualityScore: { score?: string; status?: string; date?: number } | null;
 };
 
 export type MetaCreatedMessageTemplate = {
@@ -545,7 +546,7 @@ export async function fetchWabaMessageTemplates(params: {
   const templates: MetaMessageTemplate[] = [];
   let url: string | null =
     `${graphApiBase(version)}/${encodeURIComponent(params.wabaId)}/message_templates` +
-    `?limit=100&fields=id,name,language,status,category,components,rejected_reason`;
+    `?limit=100&fields=id,name,language,status,category,components,rejected_reason,quality_score`;
   let page = 0;
 
   while (url) {
@@ -597,6 +598,16 @@ export async function fetchWabaMessageTemplates(params: {
         status: String(row.status || 'UNKNOWN').toUpperCase(),
         components: row.components || [],
         rejectedReason: row.rejected_reason != null ? String(row.rejected_reason) : null,
+        qualityScore:
+          row.quality_score && typeof row.quality_score === 'object'
+            ? {
+                score: row.quality_score.score != null ? String(row.quality_score.score) : undefined,
+                status:
+                  row.quality_score.status != null ? String(row.quality_score.status) : undefined,
+                date:
+                  row.quality_score.date != null ? Number(row.quality_score.date) : undefined,
+              }
+            : null,
       });
     }
     // Follow Meta pagination until exhausted (no name allowlist).

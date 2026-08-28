@@ -24,6 +24,12 @@ import {
   formatMetaGraphUserMessage,
   sanitizeMetaErrorData,
 } from '../services/metaEmbeddedSignupService';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+function read(relPath: string): string {
+  return readFileSync(join(__dirname, '..', relPath), 'utf8');
+}
 
 function main() {
   assert.strictEqual(WHATSAPP_READY_TEMPLATE_CATALOG.length, 12);
@@ -111,15 +117,22 @@ function main() {
   assert.ok(installSql.includes('provider_waba_id'));
   assert.ok(installSql.includes('library_key'));
 
-  // Same catalog on different WABAs is allowed (unique index is per tenant+waba+key)
-  const uniqueIndex = '(tenant_id, provider_waba_id, library_key)';
+  // Same catalog on shared WABA: unique per tenant+brand+waba+key
+  const uniqueIndex = '(tenant_id, brand_id, provider_waba_id, library_key)';
+  assert.ok(uniqueIndex.includes('brand_id'));
   assert.ok(uniqueIndex.includes('provider_waba_id'));
+  assert.ok(
+    read('database/whatsapp_template_brand_scope_upgrade.sql').includes(
+      'tenant_id, brand_id, provider_waba_id, library_key'
+    )
+  );
 
-  // Active connection required
+  // Active connection required (brand access via brandCanUseConnection + tenant scope)
   const connGuard =
-    "id = $1 AND tenant_id = $2 AND brand_id = $3 AND channel_type = 'WHATSAPP' AND status = 'ACTIVE'";
+    "id = $1 AND tenant_id = $2 AND channel_type = 'WHATSAPP' AND status = 'ACTIVE'";
   assert.ok(connGuard.includes("status = 'ACTIVE'"));
   assert.ok(connGuard.includes('tenant_id'));
+  assert.ok(read('services/whatsappReadyTemplateLibraryService.ts').includes('brandCanUseConnection'));
 
   // Rejection humanization never leaks tokens
   const human = humanizeWhatsAppTemplateRejection('Invalid format EAABxyztoken Bearer abc');

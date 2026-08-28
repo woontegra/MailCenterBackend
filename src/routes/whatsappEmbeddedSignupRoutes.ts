@@ -387,9 +387,15 @@ router.post(
     try {
       const tenantId = req.user!.tenantId;
       const id = Number(req.params.id);
+      const requestingBrandId = req.body?.brand_id
+        ? Number(req.body.brand_id)
+        : req.body?.brandId
+          ? Number(req.body.brandId)
+          : null;
       const result = await syncWhatsAppTemplatesForConnection({
         tenantId,
         connectionId: id,
+        requestingBrandId: requestingBrandId && !Number.isNaN(requestingBrandId) ? requestingBrandId : null,
       });
       res.json({
         success: true,

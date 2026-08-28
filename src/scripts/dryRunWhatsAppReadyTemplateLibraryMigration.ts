@@ -68,11 +68,11 @@ async function main() {
   let libraryKeyDuplicates: any[] = [];
   if (hasLibraryKey) {
     libraryKeyDuplicates = await q(`
-      SELECT tenant_id, provider_waba_id, library_key, COUNT(*)::int AS n,
+      SELECT tenant_id, brand_id, provider_waba_id, library_key, COUNT(*)::int AS n,
              array_agg(id ORDER BY id) AS ids
       FROM templates
       WHERE library_key IS NOT NULL AND provider_waba_id IS NOT NULL
-      GROUP BY 1, 2, 3
+      GROUP BY 1, 2, 3, 4
       HAVING COUNT(*) > 1
       ORDER BY n DESC
       LIMIT 50
@@ -120,7 +120,7 @@ async function main() {
         ? ['CHECK constraint would fail: unexpected provider_approval_status values exist']
         : []),
       ...(uniqueWouldFail
-        ? ['UNIQUE index idx_templates_library_key_waba would fail: duplicate (tenant_id, provider_waba_id, library_key) rows']
+        ? ['UNIQUE index idx_templates_library_key_waba would fail: duplicate (tenant_id, brand_id, provider_waba_id, library_key) rows']
         : []),
     ],
   };

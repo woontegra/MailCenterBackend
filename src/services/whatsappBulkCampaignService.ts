@@ -151,6 +151,17 @@ export async function assertMarketingWhatsAppTemplate(params: {
   if (wabaId && tplWaba && tplWaba !== wabaId) {
     throw Object.assign(new Error('Şablon seçilen WhatsApp hattıyla uyuşmuyor'), { status: 400 });
   }
+
+  const { brandCanUseConnection } = await import('./channelConnectionBrandShareService');
+  const connectionAllowed = await brandCanUseConnection(
+    params.tenantId,
+    params.brandId,
+    params.channelConnectionId
+  );
+  if (!connectionAllowed) {
+    throw Object.assign(new Error('WhatsApp hattı bu markada kullanılamaz'), { status: 403 });
+  }
+
   return tpl;
 }
 
