@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import { query } from '../config/database';
+import { query, withTransaction } from '../config/database';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../permissions/requirePermission';
 import { badRequest, notFound, sanitizeConnection, conflict } from '../utils/channelPlatform';
@@ -12,15 +12,28 @@ import {
 import {
   exchangeEmbeddedSignupCode,
   extractSignupIds,
+  fetchPhoneCoexistenceStatus,
   fetchPhoneNumberProfile,
   fetchWabaProfile,
   packPlatformWhatsAppCredentials,
+  requestSmbAppDataSync,
   resolvePhoneNumberIdForWaba,
   subscribeAppToWaba,
   unsubscribeAppFromWaba,
   verifyConnectionAgainstMeta,
   MetaSignupSessionInfo,
 } from '../services/metaEmbeddedSignupService';
+import {
+  coexistenceVerificationWarnings,
+  mergeReconnectSettings,
+} from '../whatsapp/coexistenceSettings';
+import {
+  COEXISTENCE_SYNC_WINDOW_MS,
+  CoexistenceSyncError,
+  getCoexistenceStatus,
+  parseCoexistenceSyncType,
+  requestCoexistenceSync,
+} from '../services/whatsappCoexistenceSyncService';
 import {
   syncWhatsAppTemplatesForConnection,
   safeTemplateSyncError,
@@ -110,6 +123,45 @@ router.post(
       ]);
       if (brand.rows.length === 0) return notFound(res);
 
+      // Reconnect of an existing connection: the result must be the same WABA + phone number,
+      // otherwise nothing (token, settings) is written.
+      const targetConnectionIdRaw = req.body?.connectionId ?? req.body?.connection_id;
+      const targetConnectionId =
+        targetConnectionIdRaw != null && targetConnectionIdRaw !== ''
+          ? Number(targetConnectionIdRaw)
+          : null;
+      let target: { id: number; wabaId: string; phoneNumberId: string; businessPhone: string | null } | null =
+        null;
+      if (targetConnectionId != null) {
+        if (!Number.isInteger(targetConnectionId) || targetConnectionId <= 0) {
+          return badRequest(res, 'connectionId geçersiz');
+        }
+        if (!isCoexistenceOnboarding) {
+          return badRequest(res, 'Mevcut bağlantıyı yeniden bağlama yalnızca Coexistence akışıyla yapılabilir');
+        }
+        const targetRow = await query(
+          `SELECT id, brand_id, settings FROM channel_connections
+           WHERE id = $1 AND tenant_id = $2 AND channel_type = 'WHATSAPP'`,
+          [targetConnectionId, tenantId]
+        );
+        if (!targetRow.rows[0]) return notFound(res);
+        if (Number(targetRow.rows[0].brand_id) !== brandId) {
+          return badRequest(res, 'Bağlantı seçili markaya ait değil');
+        }
+        const ts = targetRow.rows[0].settings || {};
+        const targetWaba = String(ts.waba_id || '').trim();
+        const targetPnid = String(ts.phone_number_id || '').trim();
+        if (!targetWaba || !targetPnid) {
+          return badRequest(res, 'Bağlantıda WABA ID veya Phone Number ID eksik');
+        }
+        target = {
+          id: Number(targetRow.rows[0].id),
+          wabaId: targetWaba,
+          phoneNumberId: targetPnid,
+          businessPhone: String(ts.business_phone_number || ts.business_phone || '').trim() || null,
+        };
+      }
+
       let session: MetaSignupSessionInfo = {};
       if (sessionRaw && typeof sessionRaw === 'object') {
         const nested =
@@ -149,22 +201,23 @@ router.post(
       // Do NOT call the Cloud API register endpoint; number stays on WhatsApp Business app.
       if (!ids.phoneNumberId) {
         try {
-          const preferredDisplay =
-            String(
-              req.body?.preferredPhone ||
-                req.body?.preferred_phone ||
-                req.body?.businessPhone ||
-                ''
-            ).trim() || null;
           const resolved = await resolvePhoneNumberIdForWaba({
             accessToken,
             wabaId: ids.wabaId,
-            preferredDisplayPhone: preferredDisplay,
+            preferredPhoneNumberId: target?.phoneNumberId || null,
+            preferredDisplayPhone: target?.businessPhone || null,
           });
           ids = { ...ids, phoneNumberId: resolved.phoneNumberId };
         } catch (err: any) {
           return badRequest(res, sanitizeErr(err, 'Coexistence telefon numarası çözülemedi'));
         }
+      }
+
+      if (target && (ids.wabaId !== target.wabaId || ids.phoneNumberId !== target.phoneNumberId)) {
+        return conflict(
+          res,
+          'Meta farklı bir WhatsApp hesabı veya numara döndürdü. Mevcut bağlantı ve token değiştirilmedi.'
+        );
       }
 
       let phone;
@@ -181,6 +234,26 @@ router.post(
       } catch (err: any) {
         return badRequest(res, sanitizeErr(err, 'WABA / telefon doğrulaması başarısız'));
       }
+
+      let coexistenceStatus: { isOnBizApp: boolean | null; platformType: string | null } | null = null;
+      let coexistenceLookupFailed = false;
+      if (isCoexistenceOnboarding) {
+        try {
+          coexistenceStatus = await fetchPhoneCoexistenceStatus({
+            accessToken,
+            phoneNumberId: ids.phoneNumberId,
+          });
+        } catch {
+          coexistenceLookupFailed = true;
+        }
+      }
+      const warnings = isCoexistenceOnboarding
+        ? coexistenceVerificationWarnings({
+            isOnBizApp: coexistenceStatus?.isOnBizApp,
+            platformType: coexistenceStatus?.platformType,
+            lookupFailed: coexistenceLookupFailed,
+          })
+        : [];
 
       try {
         await subscribeAppToWaba({
@@ -218,17 +291,18 @@ router.post(
 
       // Upsert by phone_number_id — NEVER overwrite a different number (e.g. Meta test line)
       // with a coexistence / real business number (or vice versa).
-      const existingByPhone = await query(
-        `SELECT id, settings FROM channel_connections
-         WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP'
-           AND settings->>'phone_number_id' = $3
-         ORDER BY id ASC LIMIT 1`,
-        [tenantId, brandId, ids.phoneNumberId]
-      );
+      let existingId: number | null = target ? target.id : null;
 
-      let existingId: number | null = existingByPhone.rows[0]?.id
-        ? Number(existingByPhone.rows[0].id)
-        : null;
+      if (!existingId) {
+        const existingByPhone = await query(
+          `SELECT id, settings FROM channel_connections
+           WHERE tenant_id = $1 AND brand_id = $2 AND channel_type = 'WHATSAPP'
+             AND settings->>'phone_number_id' = $3
+           ORDER BY id ASC LIMIT 1`,
+          [tenantId, brandId, ids.phoneNumberId]
+        );
+        existingId = existingByPhone.rows[0]?.id ? Number(existingByPhone.rows[0].id) : null;
+      }
 
       if (!existingId) {
         // Same WABA + same normalized display phone, if phone_number_id was missing historically
@@ -273,19 +347,45 @@ router.post(
         ) {
           if (!(await enforceCountQuota(res, tenantId, 'max_whatsapp_connections'))) return;
         }
-        saved = await query(
-          `UPDATE channel_connections
-           SET provider = 'META_WHATSAPP_CLOUD',
-               display_name = $1,
-               status = 'ACTIVE',
-               encrypted_credentials = $2,
-               settings = $3::jsonb,
-               last_tested_at = CURRENT_TIMESTAMP,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = $4 AND tenant_id = $5
-           RETURNING *`,
-          [displayName, encrypted, JSON.stringify(settings), existingId, tenantId]
-        );
+        // Token swap happens only here, after every Meta check passed, inside a row lock that
+        // re-checks the phone number so a concurrent edit cannot redirect the new token.
+        const lockedId = existingId;
+        saved = await withTransaction(async (client) => {
+          const locked = await client.query(
+            `SELECT settings FROM channel_connections
+             WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+            [lockedId, tenantId]
+          );
+          if (!locked.rows[0]) {
+            throw Object.assign(new Error('Bağlantı bulunamadı'), { code: 'RECONNECT_TARGET_GONE' });
+          }
+          const currentPnid = String(locked.rows[0].settings?.phone_number_id || '').trim();
+          if (currentPnid && currentPnid !== ids.phoneNumberId) {
+            throw Object.assign(new Error('Telefon numarası eşleşmiyor'), { code: 'RECONNECT_PHONE_MISMATCH' });
+          }
+          const mergedSettings = mergeReconnectSettings({
+            existing: locked.rows[0].settings,
+            fresh: settings,
+            coexistence: isCoexistenceOnboarding,
+            now: new Date(),
+            isOnBizApp: coexistenceStatus?.isOnBizApp ?? null,
+            platformType: coexistenceStatus?.platformType ?? null,
+            credentialsRotated: true,
+          });
+          return client.query(
+            `UPDATE channel_connections
+             SET provider = 'META_WHATSAPP_CLOUD',
+                 display_name = $1,
+                 status = 'ACTIVE',
+                 encrypted_credentials = $2,
+                 settings = $3::jsonb,
+                 last_tested_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $4 AND tenant_id = $5
+             RETURNING *`,
+            [displayName, encrypted, JSON.stringify(mergedSettings), lockedId, tenantId]
+          );
+        });
         await afterCountResourceCreated(tenantId);
       } else {
         const { enforceCountQuota, afterCountResourceCreated } = await import('../utils/quotaGuards');
@@ -303,13 +403,22 @@ router.post(
           uniqueDisplay = `${displayName} (${ids.phoneNumberId.slice(-6)})`;
         }
 
+        const newSettings = mergeReconnectSettings({
+          existing: {},
+          fresh: settings,
+          coexistence: isCoexistenceOnboarding,
+          now: new Date(),
+          isOnBizApp: coexistenceStatus?.isOnBizApp ?? null,
+          platformType: coexistenceStatus?.platformType ?? null,
+          credentialsRotated: false,
+        });
         saved = await query(
           `INSERT INTO channel_connections
             (tenant_id, brand_id, channel_type, provider, display_name, status,
              encrypted_credentials, settings, last_tested_at)
            VALUES ($1,$2,'WHATSAPP','META_WHATSAPP_CLOUD',$3,'ACTIVE',$4,$5::jsonb,CURRENT_TIMESTAMP)
            RETURNING *`,
-          [tenantId, brandId, uniqueDisplay, encrypted, JSON.stringify(settings)]
+          [tenantId, brandId, uniqueDisplay, encrypted, JSON.stringify(newSettings)]
         );
         await afterCountResourceCreated(tenantId);
       }
@@ -366,10 +475,28 @@ router.post(
         },
         webhookSubscribed: true,
         templateSync,
+        reconnected: Boolean(target),
+        coexistenceStatus: isCoexistenceOnboarding
+          ? {
+              isOnBizApp: coexistenceStatus?.isOnBizApp ?? null,
+              platformType: coexistenceStatus?.platformType ?? null,
+              onboardedAt: connection.settings?.coexistence_onboarded_at || null,
+              syncDeadline: connection.settings?.coexistence_onboarded_at
+                ? new Date(
+                    new Date(connection.settings.coexistence_onboarded_at).getTime() +
+                      COEXISTENCE_SYNC_WINDOW_MS
+                  ).toISOString()
+                : null,
+            }
+          : null,
+        warnings,
       });
     } catch (error: any) {
       if (error.code === '23505') {
         return conflict(res, 'Bu marka için WhatsApp bağlantısı zaten var');
+      }
+      if (error.code === 'RECONNECT_PHONE_MISMATCH' || error.code === 'RECONNECT_TARGET_GONE') {
+        return conflict(res, 'Bağlantı yeniden bağlama sırasında değişti; token değiştirilmedi');
       }
       console.error('Embedded signup complete error');
       return res.status(500).json({ error: 'WhatsApp Embedded Signup tamamlanamadı' });
@@ -713,6 +840,94 @@ router.post(
       });
     } catch (err: any) {
       return badRequest(res, sanitizeErr(err, 'Test mesajı başarısız'));
+    }
+  }
+);
+
+function coexistenceSyncDeps() {
+  return {
+    db: { query },
+    unpackAccessToken: (encrypted: string | null) => unpackWhatsAppCredentials(encrypted).accessToken,
+    callSmbAppData: requestSmbAppDataSync,
+    now: () => new Date(),
+  };
+}
+
+function respondCoexistenceError(res: Response, error: any, fallback: string) {
+  if (error instanceof CoexistenceSyncError) {
+    return res.status(error.httpStatus).json({
+      success: false,
+      code: error.code,
+      error: error.message,
+      ...(error.data ? { data: error.data } : {}),
+    });
+  }
+  if (error?.code === '42P01') {
+    return res.status(503).json({
+      success: false,
+      code: 'MIGRATION_REQUIRED',
+      error: 'Coexistence eşitleme tabloları henüz oluşturulmadı (migration gerekli)',
+    });
+  }
+  console.error(fallback);
+  return res.status(500).json({ success: false, error: fallback });
+}
+
+/**
+ * GET /api/channel-connections/:id/whatsapp/coexistence-status
+ */
+router.get(
+  '/:id/whatsapp/coexistence-status',
+  requirePermission('CHANNEL_MANAGE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const connectionId = Number(req.params.id);
+      if (!Number.isInteger(connectionId) || connectionId <= 0) return badRequest(res, 'Geçersiz bağlantı');
+      const data = await getCoexistenceStatus(
+        { tenantId: req.user!.tenantId, connectionId },
+        coexistenceSyncDeps()
+      );
+      return res.json({ success: true, data });
+    } catch (error) {
+      return respondCoexistenceError(res, error, 'Coexistence durumu alınamadı');
+    }
+  }
+);
+
+/**
+ * POST /api/channel-connections/:id/whatsapp/coexistence-sync
+ * body: { syncType: 'CONTACTS' | 'HISTORY', confirmRetry?: boolean }
+ */
+router.post(
+  '/:id/whatsapp/coexistence-sync',
+  requirePermission('CHANNEL_MANAGE'),
+  signupLimiter,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const connectionId = Number(req.params.id);
+      if (!Number.isInteger(connectionId) || connectionId <= 0) return badRequest(res, 'Geçersiz bağlantı');
+      const syncType = parseCoexistenceSyncType(req.body?.syncType ?? req.body?.sync_type);
+      if (!syncType) return badRequest(res, 'syncType CONTACTS veya HISTORY olmalı');
+      const result = await requestCoexistenceSync(
+        {
+          tenantId: req.user!.tenantId,
+          connectionId,
+          syncType,
+          userId: req.user?.userId ?? null,
+          confirmRetry: req.body?.confirmRetry === true,
+        },
+        coexistenceSyncDeps()
+      );
+      return res.status(202).json({
+        success: true,
+        data: { ...result, deadline: result.deadline.toISOString() },
+        message:
+          syncType === 'CONTACTS'
+            ? 'Kişi eşitleme isteği Meta tarafından kabul edildi'
+            : 'Geçmiş eşitleme isteği Meta tarafından kabul edildi',
+      });
+    } catch (error) {
+      return respondCoexistenceError(res, error, 'Eşitleme isteği gönderilemedi');
     }
   }
 );

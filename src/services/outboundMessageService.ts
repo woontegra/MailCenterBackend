@@ -518,6 +518,7 @@ export async function resetFailedForRetry(id: number, tenantId: number) {
          queued_at = CURRENT_TIMESTAMP,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = $1 AND tenant_id = $2 AND status = 'FAILED'
+       AND idempotency_key NOT LIKE 'wa-coex:%'
      RETURNING *`,
     [id, tenantId]
   );

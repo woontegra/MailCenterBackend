@@ -110,7 +110,8 @@ router.get('/control-center', async (_req: AuthRequest, res: Response) => {
            COUNT(*) FILTER (WHERE channel_type='WHATSAPP')::int AS whatsapp,
            COUNT(*) FILTER (WHERE channel_type='SMS')::int AS sms
          FROM outbound_messages
-         WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'`
+         WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+           AND idempotency_key NOT LIKE 'wa-coex:%'`
       ).catch(() => ({ rows: [{ mail: 0, whatsapp: 0, sms: 0 }] })),
       query(
         `SELECT COUNT(*)::int AS c FROM platform_support_tickets
@@ -690,6 +691,7 @@ router.get('/send-stats', async (_req: AuthRequest, res: Response) => {
          COUNT(*) FILTER (WHERE UPPER(COALESCE(status,'')) IN ('PENDING','QUEUED','PROCESSING'))::int AS pending
        FROM outbound_messages
        WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+         AND idempotency_key NOT LIKE 'wa-coex:%'
        GROUP BY DATE(created_at)
        ORDER BY day ASC`
     ).catch(() => ({ rows: [] }));
@@ -702,7 +704,8 @@ router.get('/send-stats', async (_req: AuthRequest, res: Response) => {
          COUNT(*) FILTER (WHERE channel_type='WHATSAPP')::int AS whatsapp,
          COUNT(*) FILTER (WHERE channel_type='SMS')::int AS sms
        FROM outbound_messages
-       WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'`
+       WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+         AND idempotency_key NOT LIKE 'wa-coex:%'`
     ).catch(() => ({ rows: [{}] }));
     res.json({ success: true, data: { days: result.rows, totals: totals.rows[0] || {} } });
   } catch (error) {

@@ -416,35 +416,7 @@ export class MetaWhatsAppCloudAdapter implements WhatsAppProviderAdapter {
 
         const messages = Array.isArray(value.messages) ? value.messages : [];
         for (const msg of messages) {
-          const type = String(msg.type || 'text');
-          let textBody: string | null = null;
-          let mediaMetadata: Record<string, unknown> | null = null;
-
-          if (type === 'text') {
-            textBody = msg.text?.body != null ? String(msg.text.body) : null;
-          } else if (['image', 'audio', 'video', 'document', 'sticker'].includes(type)) {
-            const media = msg[type] || {};
-            mediaMetadata = {
-              media_type: type,
-              mime_type: media.mime_type || null,
-              sha256: media.sha256 || null,
-              // Do not persist provider download URLs that may embed tokens
-              has_media: true,
-            };
-            textBody = 'Medya mesajı';
-          } else if (type === 'location') {
-            textBody = 'Konum mesajı';
-            mediaMetadata = { media_type: 'location' };
-          } else if (type === 'contacts') {
-            textBody = 'Kişi kartı';
-            mediaMetadata = { media_type: 'contacts' };
-          } else if (type === 'interactive') {
-            textBody = msg.interactive?.button_reply?.title
-              || msg.interactive?.list_reply?.title
-              || 'Etkileşimli yanıt';
-          } else {
-            textBody = `Mesaj (${type})`;
-          }
+          const { type, textBody, mediaMetadata } = extractMetaMessageContent(msg);
 
           events.push({
             kind: 'inbound',
@@ -463,6 +435,44 @@ export class MetaWhatsAppCloudAdapter implements WhatsAppProviderAdapter {
 
     return events.filter((e) => e.providerMessageId);
   }
+}
+
+export function extractMetaMessageContent(msg: any): {
+  type: string;
+  textBody: string | null;
+  mediaMetadata: Record<string, unknown> | null;
+} {
+  const type = String(msg?.type || 'text');
+  let textBody: string | null = null;
+  let mediaMetadata: Record<string, unknown> | null = null;
+
+  if (type === 'text') {
+    textBody = msg.text?.body != null ? String(msg.text.body) : null;
+  } else if (['image', 'audio', 'video', 'document', 'sticker'].includes(type)) {
+    const media = msg[type] || {};
+    mediaMetadata = {
+      media_type: type,
+      mime_type: media.mime_type || null,
+      sha256: media.sha256 || null,
+      // Do not persist provider download URLs that may embed tokens
+      has_media: true,
+    };
+    textBody = 'Medya mesajı';
+  } else if (type === 'location') {
+    textBody = 'Konum mesajı';
+    mediaMetadata = { media_type: 'location' };
+  } else if (type === 'contacts') {
+    textBody = 'Kişi kartı';
+    mediaMetadata = { media_type: 'contacts' };
+  } else if (type === 'interactive') {
+    textBody = msg.interactive?.button_reply?.title
+      || msg.interactive?.list_reply?.title
+      || 'Etkileşimli yanıt';
+  } else {
+    textBody = `Mesaj (${type})`;
+  }
+
+  return { type, textBody, mediaMetadata };
 }
 
 /** E.164 → Meta `to` digits without + */

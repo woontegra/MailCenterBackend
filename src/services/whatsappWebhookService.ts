@@ -43,7 +43,40 @@ export async function findWhatsAppConnectionsByVerifyToken(verifyToken: string) 
   return matches;
 }
 
-async function resolveContactId(
+export async function findWhatsAppConnectionsByWabaId(wabaId: string) {
+  const result = await query(
+    `SELECT *
+     FROM channel_connections
+     WHERE channel_type = 'WHATSAPP'
+       AND UPPER(COALESCE(provider, '')) IN ('META_WHATSAPP_CLOUD', 'META_CLOUD')
+       AND settings->>'waba_id' = $1`,
+    [wabaId]
+  );
+  return result.rows;
+}
+
+/** Candidate connections whose per-connection app secret may have signed a webhook. */
+export async function findWhatsAppConnectionsForSignature(params: {
+  phoneNumberIds: string[];
+  wabaIds: string[];
+}) {
+  if (params.phoneNumberIds.length === 0 && params.wabaIds.length === 0) return [];
+  const result = await query(
+    `SELECT id, encrypted_credentials
+     FROM channel_connections
+     WHERE channel_type = 'WHATSAPP'
+       AND UPPER(COALESCE(provider, '')) IN ('META_WHATSAPP_CLOUD', 'META_CLOUD')
+       AND encrypted_credentials IS NOT NULL
+       AND (
+         settings->>'phone_number_id' = ANY($1::text[])
+         OR settings->>'waba_id' = ANY($2::text[])
+       )`,
+    [params.phoneNumberIds, params.wabaIds]
+  );
+  return result.rows;
+}
+
+export async function resolveContactId(
   tenantId: number,
   phoneRaw: string
 ): Promise<number | null> {

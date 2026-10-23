@@ -285,6 +285,73 @@ export async function fetchPhoneNumberProfile(params: {
   };
 }
 
+/** Coexistence check from Meta docs: is_on_biz_app=true and platform_type=CLOUD_API. */
+export async function fetchPhoneCoexistenceStatus(params: {
+  accessToken: string;
+  phoneNumberId: string;
+  apiVersion?: string;
+}): Promise<{ isOnBizApp: boolean | null; platformType: string | null }> {
+  const version = params.apiVersion || getMetaGraphApiVersion();
+  const url =
+    `${graphApiBase(version)}/${encodeURIComponent(params.phoneNumberId)}` +
+    `?fields=is_on_biz_app,platform_type`;
+  const { ok, status, data } = await graphJson(url, {
+    headers: { Authorization: `Bearer ${params.accessToken}` },
+  });
+  if (!ok) {
+    throw Object.assign(
+      new Error(sanitizeGraphError(data, status) || 'Coexistence durumu okunamadı'),
+      { code: 'PHONE_COEXISTENCE_LOOKUP_FAILED' }
+    );
+  }
+  return {
+    isOnBizApp: typeof data?.is_on_biz_app === 'boolean' ? data.is_on_biz_app : null,
+    platformType: data?.platform_type ? String(data.platform_type) : null,
+  };
+}
+
+export type SmbAppDataSyncType = 'smb_app_state_sync' | 'history';
+
+export type SmbAppDataSyncResult =
+  | { ok: true; requestId: string | null }
+  | { ok: false; uncertain: boolean; status: number; metaCode: string | null; message: string };
+
+/**
+ * POST /{phone-number-id}/smb_app_data — Meta allows each sync_type only once per onboarding.
+ * `uncertain` = timeout / network / 5xx: Meta may have accepted the request.
+ */
+export async function requestSmbAppDataSync(params: {
+  accessToken: string;
+  phoneNumberId: string;
+  syncType: SmbAppDataSyncType;
+  apiVersion?: string;
+}): Promise<SmbAppDataSyncResult> {
+  const version = params.apiVersion || getMetaGraphApiVersion();
+  const url = `${graphApiBase(version)}/${encodeURIComponent(params.phoneNumberId)}/smb_app_data`;
+  const { ok, status, data, networkKind } = await graphJson(
+    url,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: params.syncType }),
+    },
+    { timeoutMs: 30000 }
+  );
+  if (ok) {
+    return { ok: true, requestId: data?.request_id ? String(data.request_id) : null };
+  }
+  return {
+    ok: false,
+    uncertain: Boolean(networkKind) || status >= 500,
+    status,
+    metaCode: data?.error?.code != null ? String(data.error.code) : null,
+    message: sanitizeGraphError(data, status) || 'Meta eşitleme isteği başarısız',
+  };
+}
+
 export async function fetchWabaProfile(params: {
   accessToken: string;
   wabaId: string;

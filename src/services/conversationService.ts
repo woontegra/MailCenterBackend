@@ -230,6 +230,7 @@ export async function createConversation(params: {
   lastInboundAt?: Date | null;
   lastOutboundAt?: Date | null;
   unreadCount?: number;
+  emitAutomation?: boolean;
 }): Promise<any> {
   const result = await query(
     `INSERT INTO conversations (
@@ -258,7 +259,7 @@ export async function createConversation(params: {
     ]
   );
   const row = result.rows[0];
-  void emitConversationCreated(row);
+  if (params.emitAutomation !== false) void emitConversationCreated(row);
   return row;
 }
 
@@ -431,6 +432,9 @@ export async function ensurePhoneChannelConversation(params: {
   phoneRaw: string;
   contactId?: number | null;
   subject?: string | null;
+  /** Status for a newly created conversation (existing conversations keep theirs). */
+  createStatus?: ConversationStatus;
+  emitAutomation?: boolean;
 }): Promise<any | null> {
   const participant = await normalizeParticipant({
     tenantId: params.tenantId,
@@ -475,7 +479,8 @@ export async function ensurePhoneChannelConversation(params: {
     subject: params.subject || null,
     participantValue: participant.participantValue,
     normalizedParticipantValue: participant.normalized,
-    status: 'OPEN',
+    status: params.createStatus || 'OPEN',
+    emitAutomation: params.emitAutomation,
   });
 }
 

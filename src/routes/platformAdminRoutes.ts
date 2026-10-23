@@ -91,7 +91,8 @@ router.get('/overview', async (_req: AuthRequest, res: Response) => {
            COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed,
            COUNT(*) FILTER (WHERE status IN ('SENT','DELIVERED','READ','FAILED','QUEUED','PROCESSING'))::int AS total
          FROM outbound_messages
-         WHERE created_at >= date_trunc('month', CURRENT_TIMESTAMP)`
+         WHERE created_at >= date_trunc('month', CURRENT_TIMESTAMP)
+           AND idempotency_key NOT LIKE 'wa-coex:%'`
       ),
       query(
         `SELECT id, name, status, created_at FROM tenants

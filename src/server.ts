@@ -24,6 +24,16 @@ import { getMailSendQueueCounts } from './queues/mailQueue';
 import outboundMessageRoutes from './routes/outboundMessageRoutes';
 import { emitToTenant } from './services/socketService';
 import { subscribeInboxRealtime } from './services/redisEventBus';
+import {
+  createWhatsAppWebhookBodyParser,
+  createWhatsAppWebhookRateLimiter,
+  isWhatsAppWebhookPath,
+  WHATSAPP_WEBHOOK_PATH,
+} from './middleware/whatsappWebhookMiddleware';
+import {
+  pruneProcessedCoexistenceEvents,
+  scheduleCoexistenceDrain,
+} from './services/whatsappCoexistenceRuntime';
 
 const app = express();
 const httpServer = createServer(app);
@@ -49,6 +59,7 @@ const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'Too many requests from this IP',
+  skip: (req) => isWhatsAppWebhookPath(req.originalUrl),
 });
 
 const authLimiter = rateLimit({
@@ -64,6 +75,11 @@ app.use(cors({
 }));
 app.use('/api/auth', authLimiter);
 app.use('/api', limiter);
+app.use(
+  WHATSAPP_WEBHOOK_PATH,
+  createWhatsAppWebhookRateLimiter(),
+  createWhatsAppWebhookBodyParser()
+);
 app.use(express.json({
   verify: (req: any, _res, buf) => {
     const url = String(req.originalUrl || '');
@@ -309,6 +325,19 @@ const startServer = async () => {
       const backupService = new BackupService();
       await backupService.createBackup();
       await backupService.cleanOldBackups(7);
+    });
+
+    // Retry / recover WhatsApp coexistence webhook events captured but not yet processed.
+    cron.schedule('* * * * *', () => {
+      scheduleCoexistenceDrain();
+    });
+
+    cron.schedule('30 3 * * *', async () => {
+      try {
+        await pruneProcessedCoexistenceEvents(30);
+      } catch {
+        /* table may not exist before migration */
+      }
     });
 
     cron.schedule('*/30 * * * *', async () => {
